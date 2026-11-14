@@ -29,7 +29,10 @@ def update_registry_node(
         extra = video_item.get("extra", {}) or meta.get("extra", {})
 
         s_type = meta.get("source_type") or extra.get("source_type") or "subreddit"
-        s_name = meta.get("source_name") or extra.get("source_name") or extra.get("subreddit") or video_item.get("source", "funny")
+        s_name = meta.get("source_name") or extra.get("source_name") or extra.get("subreddit")
+        if not s_name or s_name.lower() == "reddit":
+            raw_s = video_item.get("source", "funny")
+            s_name = "funny" if raw_s.lower() == "reddit" else raw_s
         s_mode = meta.get("listing_mode") or extra.get("listing_mode") or extra.get("listing", "hot")
         return (s_type, s_name, s_mode)
 
