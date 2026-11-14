@@ -383,6 +383,19 @@ class AgentDatabase:
                 WHERE post_id IN ({placeholders})
             """, [now] + post_ids)
 
+    def mark_reserve_missing(self, post_ids: List[str]) -> None:
+        """Mark reserved videos as missing if their files no longer exist on disk."""
+        if not post_ids:
+            return
+        now = datetime.now().isoformat()
+        with self._get_connection() as conn:
+            placeholders = ",".join(["?"] * len(post_ids))
+            conn.execute(f"""
+                UPDATE reserve_pool
+                SET status = 'missing', used_at = ?
+                WHERE post_id IN ({placeholders})
+            """, [now] + post_ids)
+
     # --- Schedule Management ---
     def save_schedule_slots(self, target_date: str, slots: List[Dict[str, Any]]) -> None:
         """Save final 24-hour schedule to SQLite database."""

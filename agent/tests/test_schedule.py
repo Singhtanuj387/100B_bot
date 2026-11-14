@@ -102,3 +102,83 @@ def test_slot_count_follows_target(schedule_config, mock_db):
     res = schedule_node(state, schedule_config, mock_db)
     assert len(res["final_schedule"]) == 0
 
+
+def test_schedule_skips_missing_reserve_video(schedule_config, mock_db):
+    import tempfile
+    from pathlib import Path
+
+    with tempfile.TemporaryDirectory() as td:
+        tmp_dir = Path(td)
+        valid_file = tmp_dir / "valid_reserve.mp4"
+        valid_file.write_bytes(b"content")
+        missing_file = tmp_dir / "deleted_reserve.mp4"
+
+        state = {
+            "target_count": 2,
+            "target_date": "2026-11-15",
+            "dry_run": True,
+            "approved": [
+                {
+                    "post_id": "res_missing",
+                    "score": 9.0,
+                    "source": "reddit",
+                    "video_path": str(missing_file),
+                    "already_edited": True,
+                    "title": "Missing Reserve",
+                },
+                {
+                    "post_id": "res_valid",
+                    "score": 8.5,
+                    "source": "reddit",
+                    "video_path": str(valid_file),
+                    "already_edited": True,
+                    "title": "Valid Reserve",
+                },
+            ],
+        }
+
+        res = schedule_node(state, schedule_config, mock_db)
+        slots = res["final_schedule"]
+        # Only 1 slot scheduled because missing reserve was skipped
+        assert len(slots) == 1
+        assert slots[0]["post_id"] == "res_valid"
+
+
+def test_schedule_skips_missing_video_in_production(schedule_config, mock_db):
+    import tempfile
+    from pathlib import Path
+
+    with tempfile.TemporaryDirectory() as td:
+        tmp_dir = Path(td)
+        valid_file = tmp_dir / "prod_valid.mp4"
+        valid_file.write_bytes(b"content")
+        missing_file = tmp_dir / "prod_missing.mp4"
+
+        state = {
+            "target_count": 2,
+            "target_date": "2026-11-15",
+            "dry_run": False,
+            "approved": [
+                {
+                    "post_id": "vid_missing",
+                    "score": 9.2,
+                    "source": "reddit",
+                    "edited_video_path": str(missing_file),
+                    "title": "Missing File",
+                },
+                {
+                    "post_id": "vid_valid",
+                    "score": 8.1,
+                    "source": "reddit",
+                    "edited_video_path": str(valid_file),
+                    "title": "Valid File",
+                },
+            ],
+        }
+
+        res = schedule_node(state, schedule_config, mock_db)
+        slots = res["final_schedule"]
+        assert len(slots) == 1
+        assert slots[0]["post_id"] == "vid_valid"
+
+

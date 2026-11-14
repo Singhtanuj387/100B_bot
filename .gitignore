@@ -88,6 +88,7 @@ venv.bak/
 
 # Testing & Coverage
 .pytest_cache/
+.pytest_temp/
 .coverage
 .coverage.*
 .cache

@@ -96,6 +96,36 @@ def schedule_node(
 
     logger.info(f"--- [Node: SCHEDULE] Building {len(target_hours)}-slot schedule for {target_date} ({tz_name}) ---")
 
+    # Verify that all approved video files actually exist on disk before scheduling
+    valid_approved = []
+    for vid in approved:
+        v_path = vid.get("edited_video_path") or vid.get("video_path")
+        is_reserve = vid.get("already_edited") or vid.get("is_reserve_backfill")
+
+        file_exists = False
+        if v_path:
+            try:
+                file_exists = Path(v_path).is_file()
+            except Exception:
+                file_exists = False
+
+        if not file_exists:
+            # In dry-run mode, new edits are simulated and won't exist on disk,
+            # but reserve clips must always exist. In non-dry-run mode, all clips must exist.
+            if dry_run and not is_reserve:
+                valid_approved.append(vid)
+                continue
+
+            logger.error(
+                f"[Node: SCHEDULE] Video file not found on disk for '{vid.get('post_id')}': {v_path}. "
+                "Skipping clip to prevent Phase 4 failure."
+            )
+            continue
+
+        valid_approved.append(vid)
+
+    approved = valid_approved
+
     # Sort all approved by score descending
     approved.sort(key=lambda x: x.get("score", 0.0), reverse=True)
 
@@ -105,9 +135,13 @@ def schedule_node(
         approved = approved[:target_count]
         logger.info(f"Saving {len(surplus)} surplus approved clips to reserve_pool for future days.")
         for s in surplus:
+            v_path = s.get("edited_video_path") or s.get("video_path")
+            if not dry_run and (not v_path or not Path(v_path).is_file()):
+                logger.warning(f"Skipping surplus clip '{s.get('post_id')}' with missing file: {v_path}")
+                continue
             db.add_to_reserve_pool({
                 "post_id": s["post_id"],
-                "video_path": s.get("edited_video_path") or s["video_path"],
+                "video_path": v_path,
                 "caption": s.get("caption"),
                 "title": s.get("youtube_title") or s.get("title"),
                 "description": s.get("youtube_description") or s.get("caption"),
