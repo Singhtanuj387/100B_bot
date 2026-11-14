@@ -1,0 +1,210 @@
+import os
+import json
+import sqlite3
+import time
+from contextlib import contextmanager
+from datetime import datetime, timedelta
+from pathlib import Path
+from typing import Optional, Dict, Any, List
+from loguru import logger
+
+
+DEFAULT_DB_PATH = Path(__file__).resolve().parent.parent / "agent" / "data" / "agent.db"
+
+
+@contextmanager
+def file_lock(lock_path: Path, timeout: float = 10.0, poll_interval: float = 0.1):
+    """Simple cross-platform non-reentrant file lock using atomic O_EXCL file creation."""
+    lock_path = Path(lock_path)
+    start_time = time.time()
+    fd = None
+    while True:
+        try:
+            fd = os.open(str(lock_path), os.O_CREAT | os.O_EXCL | os.O_RDWR)
+            break
+        except FileExistsError:
+            if time.time() - start_time >= timeout:
+                # Check if lock file is stale (> 60s)
+                try:
+                    mtime = os.path.getmtime(lock_path)
+                    if time.time() - mtime > 60:
+                        os.unlink(lock_path)
+                        continue
+                except Exception:
+                    pass
+                raise TimeoutError(f"Could not acquire file lock on {lock_path} within {timeout}s")
+            time.sleep(poll_interval)
+    try:
+        yield
+    finally:
+        if fd is not None:
+            try:
+                os.close(fd)
+            except Exception:
+                pass
+            try:
+                if lock_path.exists():
+                    os.unlink(lock_path)
+            except Exception:
+                pass
+
+
+def atomic_write_json(file_path: Path, data: Dict[str, Any], indent: int = 2):
+    """
+    Write JSON file atomically using a temp file and atomic rename, guarded by a file lock.
+    """
+    file_path = Path(file_path).resolve()
+    file_path.parent.mkdir(parents=True, exist_ok=True)
+    lock_file = file_path.with_suffix(file_path.suffix + ".lock")
+    temp_file = file_path.with_name(f"{file_path.name}.tmp.{os.getpid()}")
+
+    with file_lock(lock_file):
+        with open(temp_file, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=indent, ensure_ascii=False)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(temp_file, file_path)
+
+
+class UploadDatabase:
+    """
+    Direct SQLite database interface for Phase 4 uploader.
+    Uses plain sqlite3; completely decoupled from agent.core.
+    """
+
+    def __init__(self, db_path: Optional[Path] = None):
+        self.db_path = Path(db_path or DEFAULT_DB_PATH).resolve()
+        self.db_path.parent.mkdir(parents=True, exist_ok=True)
+        self._init_db()
+
+    def _get_connection(self) -> sqlite3.Connection:
+        conn = sqlite3.connect(str(self.db_path), timeout=30.0)
+        conn.row_factory = sqlite3.Row
+        return conn
+
+    def _init_db(self):
+        """Create uploads table if it does not already exist."""
+        with self._get_connection() as conn:
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS uploads (
+                    post_id TEXT PRIMARY KEY,
+                    target_date TEXT NOT NULL,
+                    slot_time TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    video_id TEXT,
+                    attempts INTEGER DEFAULT 0,
+                    last_error TEXT,
+                    uploaded_at TEXT,
+                    privacy TEXT,
+                    publish_at TEXT
+                );
+            """)
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_uploads_date ON uploads(target_date);")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_uploads_status ON uploads(status);")
+            conn.commit()
+
+    def get_upload(self, post_id: str) -> Optional[Dict[str, Any]]:
+        """Fetch upload record for a post_id."""
+        with self._get_connection() as conn:
+            row = conn.execute("SELECT * FROM uploads WHERE post_id = ?", (post_id,)).fetchone()
+            return dict(row) if row else None
+
+    def record_attempt(
+        self,
+        post_id: str,
+        target_date: str,
+        slot_time: str,
+        status: str,
+        video_id: Optional[str] = None,
+        privacy: Optional[str] = None,
+        publish_at: Optional[str] = None,
+        error: Optional[str] = None,
+    ):
+        """Insert or update upload record when an attempt begins or finishes."""
+        now = datetime.now().isoformat()
+        with self._get_connection() as conn:
+            conn.execute("""
+                INSERT INTO uploads (
+                    post_id, target_date, slot_time, status, video_id, attempts, last_error, uploaded_at, privacy, publish_at
+                ) VALUES (?, ?, ?, ?, ?, 1, ?, ?, ?, ?)
+                ON CONFLICT(post_id) DO UPDATE SET
+                    status = excluded.status,
+                    video_id = COALESCE(excluded.video_id, uploads.video_id),
+                    attempts = uploads.attempts + 1,
+                    last_error = excluded.last_error,
+                    uploaded_at = COALESCE(excluded.uploaded_at, uploads.uploaded_at),
+                    privacy = COALESCE(excluded.privacy, uploads.privacy),
+                    publish_at = COALESCE(excluded.publish_at, uploads.publish_at);
+            """, (post_id, target_date, slot_time, status, video_id, error, now if status in ("uploaded", "scheduled") else None, privacy, publish_at))
+            conn.commit()
+
+    def update_status(
+        self,
+        post_id: str,
+        status: str,
+        video_id: Optional[str] = None,
+        error: Optional[str] = None,
+        privacy: Optional[str] = None,
+    ):
+        """Update status and metadata of an existing upload."""
+        now = datetime.now().isoformat()
+        with self._get_connection() as conn:
+            conn.execute("""
+                UPDATE uploads
+                SET status = ?,
+                    video_id = COALESCE(?, video_id),
+                    last_error = ?,
+                    uploaded_at = CASE WHEN ? IN ('uploaded', 'scheduled') THEN ? ELSE uploaded_at END,
+                    privacy = COALESCE(?, privacy)
+                WHERE post_id = ?;
+            """, (status, video_id, error, status, now, privacy, post_id))
+            conn.commit()
+
+    def get_uploads_by_date(self, target_date: str) -> List[Dict[str, Any]]:
+        """Return all uploads for a given target_date."""
+        with self._get_connection() as conn:
+            rows = conn.execute("SELECT * FROM uploads WHERE target_date = ? ORDER BY slot_time ASC", (target_date,)).fetchall()
+            return [dict(r) for r in rows]
+
+    def get_recent_uploads(self, days: int = 7) -> List[Dict[str, Any]]:
+        """Return uploads from the last N days."""
+        cutoff = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d")
+        with self._get_connection() as conn:
+            rows = conn.execute("SELECT * FROM uploads WHERE target_date >= ? ORDER BY target_date DESC, slot_time ASC", (cutoff,)).fetchall()
+            return [dict(r) for r in rows]
+
+    def get_daily_upload_count(self, target_date: str) -> int:
+        """Count how many videos were uploaded/scheduled for a target_date."""
+        with self._get_connection() as conn:
+            row = conn.execute(
+                "SELECT COUNT(*) as cnt FROM uploads WHERE target_date = ? AND status IN ('uploaded', 'scheduled')",
+                (target_date,)
+            ).fetchone()
+            return int(row["cnt"]) if row else 0
+
+
+def update_schedule_slot(schedule_path: Path, post_id: str, updates: Dict[str, Any]):
+    """
+    Atomically update fields for a specific slot in schedule.json.
+    """
+    schedule_path = Path(schedule_path).resolve()
+    if not schedule_path.is_file():
+        logger.warning(f"Cannot update schedule slot: {schedule_path} does not exist.")
+        return
+
+    with open(schedule_path, "r", encoding="utf-8") as f:
+        data = json.load(f)
+
+    slots = data.get("slots", [])
+    found = False
+    for slot in slots:
+        if slot.get("post_id") == post_id:
+            slot.update(updates)
+            found = True
+            break
+
+    if found:
+        atomic_write_json(schedule_path, data)
+        logger.debug(f"Updated slot for {post_id} in {schedule_path.name}")
+    else:
+        logger.warning(f"Slot with post_id {post_id} not found in {schedule_path.name}")

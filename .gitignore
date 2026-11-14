@@ -15,6 +15,10 @@ credentials.json
 client_secret*.json
 token.pickle
 token.json
+uploader/secrets/
+STOP
+*.lock
+daily_run.lock
 
 # --- SQLite Databases & Cache ---
 *.db

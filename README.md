@@ -217,6 +217,145 @@ python agent/curate.py --target 6 --date tomorrow --no-review --borderline-polic
 
 ---
 
+## 🚀 Phase 4: YouTube Shorts Upload & Daily Automation
+
+Phase 4 automates uploading the 6 curated daily videos to YouTube as Shorts and orchestrates the end-to-end daily pipeline on Windows.
+
+### 1. Google Cloud Console Setup
+
+1. **Create Project**: Go to [Google Cloud Console](https://console.cloud.google.com/) and create a project (e.g. `100B-Shorts-Bot`).
+2. **Enable YouTube Data API v3**:
+   - In APIs & Services $\rightarrow$ Library, search for **YouTube Data API v3** and click **Enable**.
+3. **Configure OAuth Consent Screen**:
+   - User Type: **External**.
+   - App Name: `100B YouTube Shorts Bot`.
+   - Add scopes:
+     - `https://www.googleapis.com/auth/youtube.upload`
+     - `https://www.googleapis.com/auth/youtube.readonly`
+   - Publishing Status: Set to **In production** (if kept in "Testing", refresh tokens expire after 7 days).
+4. **Create OAuth Client ID**:
+   - In APIs & Services $\rightarrow$ Credentials, click **Create Credentials** $\rightarrow$ **OAuth client ID**.
+   - Application Type: **Desktop Application**.
+   - Name: `100B Desktop Client`.
+   - Download the JSON file, rename it to `client_secret.json`, and place it in:
+     `uploader/secrets/client_secret.json` (guarded by `.gitignore`).
+
+---
+
+### 2. Timezone & Quota Accounting
+
+* **Channel Timezone**: The pipeline's target dates and `--date tomorrow` resolution use **`America/New_York` (US Eastern Time)** as the single source of truth.
+  * When running daily at 18:00 local time, "tomorrow" corresponds to tomorrow's date in New York.
+  * The 6 daily slots (12:00, 14:00, 17:00, 19:00, 20:00, 21:00 EST) are converted to UTC RFC 3339 for YouTube `publishAt`.
+* **Daily Quota Budget**:
+  * Default project quota: **10,000 units/day** (resets at midnight Pacific Time / PT).
+  * `videos.insert` costs **1,600 units** (6 daily slots = 9,600 units).
+  * `videos.list` costs **1 unit**.
+  * Quota costs and daily caps are configured in `uploader/config.yaml` (`daily_cap: 10000`, `insert_cost: 1600`).
+* **YouTube Audit & Private Lock**:
+  * For unaudited/unverified API projects, YouTube may lock uploaded videos as `private`. The client detects this via post-upload `videos.list(part="status")` and logs an informative warning rather than crashing. Complete the YouTube API Verification in Cloud Console if public unlisted/scheduled publishing is restricted.
+
+---
+
+### 3. First-Run Checklist
+
+Follow this sequence before automating:
+
+1. **One-Time OAuth Authorization**:
+   ```bash
+   python upload.py auth
+   ```
+   * Opens your browser to grant YouTube upload permissions to your Google account.
+   * Saves `uploader/secrets/token.json` for automatic non-interactive token refreshes.
+
+2. **Dry-Run Upload Test**:
+   ```bash
+   python upload.py upload --date tomorrow --dry-run
+   ```
+   * Verifies schedule parsing, metadata formatting, and 9:16 video validation without consuming API quota.
+
+3. **Single Private Test Upload**:
+   ```bash
+   python upload.py upload --date tomorrow
+   ```
+   * Uploads videos as private drafts (`first_run_private: true` safety net).
+
+4. **Post-Upload Verification**:
+   ```bash
+   python upload.py verify --date tomorrow
+   ```
+   * Checks processing status, confirms resolution, and logs quota usage.
+
+5. **Inspect Status Table**:
+   ```bash
+   python upload.py status --days 7
+   ```
+
+6. **Go Live**:
+   * Add `--confirm-public` or set `upload.go_live: true` and `upload.first_run_private: false` in `uploader/config.yaml` to enable scheduled publishing.
+
+---
+
+### 4. Upload CLI Commands
+
+```bash
+# Authenticate OAuth
+python upload.py auth
+
+# Upload scheduled batch for tomorrow (evening before run)
+python upload.py upload --date tomorrow --confirm-public
+
+# Realtime mode (run every 15 mins to upload due slots)
+python upload.py run-due --confirm-public
+
+# Check processing status
+python upload.py verify --date tomorrow
+
+# Display last 7 days status table
+python upload.py status --days 7
+
+# Retry failed slots
+python upload.py retry-failed --date tomorrow
+```
+
+---
+
+### 5. Windows Task Scheduler Setup
+
+Automate the daily pipeline by scheduling `run_daily.py`:
+
+#### Recommended Schedule: Daily at 18:00 (6:00 PM) Local Time
+
+1. Open **Task Scheduler** in Windows (`taskschd.msc`).
+2. Click **Create Task...** (not Basic Task):
+   * **General**:
+     * Name: `100B Daily Video Bot`
+     * Select: **Run whether user is logged on or not** (or Run only when user is logged on)
+     * Check: **Run with highest privileges**
+   * **Triggers**:
+     * New Trigger: **Daily** at `18:00:00`
+   * **Actions**:
+     * Action: **Start a program**
+     * Program/script: `C:\Python314\python.exe` (or your Python path)
+     * Add arguments: `run_daily.py --date tomorrow --confirm-public`
+     * Start in: `C:\Drive-D\python tut\100B`
+   * **Conditions**:
+     * ✅ **Wake the computer to run this task**
+   * **Settings**:
+     * ✅ **Run task as soon as possible after a missed start**
+     * If the task fails, restart every: `10 minutes` (up to 3 times)
+     * Stop the task if it runs longer than: `2 hours`
+
+#### Optional: Realtime Runner (Every 15 Minutes)
+If running in realtime mode (`upload.mode: "realtime"`), create a secondary task:
+* Trigger: **Daily**, repeat every **15 minutes** for a duration of **1 day**.
+* Program: `C:\Python314\python.exe`
+* Arguments: `upload.py run-due --confirm-public`
+* Start in: `C:\Drive-D\python tut\100B`
+* Settings: ✅ **Run as soon as possible after a missed start**
+
+---
+
 ## 🖥 Windows Drag & Drop Helper
 
 Double-click or drag-and-drop any video onto [`run.bat`](file:///c:/Drive-D/python%20tut/100B/run.bat) to launch the editor directly in Windows File Explorer.
