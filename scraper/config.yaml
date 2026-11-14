@@ -56,9 +56,9 @@ twitter:
 
 # Quality & Safety Filters
 filters:
-  min_duration_seconds: 5.0      # Minimum length in seconds (single source of truth)
+  min_duration_seconds: 6.0      # Minimum length in seconds (single source of truth: clips < 6s dropped)
   max_duration_seconds: 90.0     # Maximum length in seconds (YouTube Shorts allow up to 180s since Oct 2024; 90s is quality choice)
-  min_duration: 5.0              # Backward-compatible alias
+  min_duration: 6.0              # Backward-compatible alias
   max_duration: 90.0             # Backward-compatible alias
   min_height: 480                # Minimum resolution height
   min_width: 480                 # Minimum resolution width

@@ -331,3 +331,123 @@ def test_borderline_policy_approve_top_and_reject(mock_db):
     assert len(res_reject["rejected"]) == 3
 
 
+def test_decide_short_clip_duration_threshold_and_scores(mock_db):
+    """
+    Clips under short_clip_duration_threshold (8.0s) require higher score (>= 7.5) to auto-approve.
+    Clips >= 8.0s only require min_publish_score (6.5).
+    """
+    config = {
+        "scoring": {
+            "llm_weight": 0.70,
+            "engagement_weight": 0.30,
+            "min_publish_score": 6.5,
+            "short_clip_duration_threshold": 8.0,
+            "short_clip_min_score": 7.5,
+            "auto_reject_threshold": 5.0,
+        }
+    }
+    candidates = [
+        # Short clip (< 8.0s) with high score >= 7.5 -> Auto-approved
+        {
+            "post_id": "short_high",
+            "title": "Short High Score",
+            "llm_score": 8.5,
+            "score": 1000,
+            "duration": 6.5,
+            "is_safe_for_ads": True,
+            "has_visible_watermark": False,
+            "is_english_or_no_speech": True,
+            "created_utc": 10.0,
+        },
+        # Short clip (< 8.0s) with score 6.8 (>= 6.5 but < 7.5) -> Routed to borderline
+        {
+            "post_id": "short_borderline",
+            "title": "Short Moderate Score",
+            "llm_score": 6.8,
+            "score": 500,
+            "duration": 7.0,
+            "is_safe_for_ads": True,
+            "has_visible_watermark": False,
+            "is_english_or_no_speech": True,
+            "created_utc": 9.0,
+        },
+        # Regular clip (>= 8.0s) with score 6.8 (>= 6.5) -> Auto-approved
+        {
+            "post_id": "normal_ok",
+            "title": "Normal Duration Moderate Score",
+            "llm_score": 6.8,
+            "score": 500,
+            "duration": 15.0,
+            "is_safe_for_ads": True,
+            "has_visible_watermark": False,
+            "is_english_or_no_speech": True,
+            "created_utc": 8.0,
+        },
+    ]
+
+    state = {
+        "candidates": candidates,
+        "approved": [],
+        "borderline": [],
+        "rejected": [],
+        "target_count": 3,
+        "target_date": "2026-11-15",
+    }
+    result = decide_node(state, config, mock_db)
+
+    approved_ids = [c["post_id"] for c in result["approved"]]
+    borderline_ids = [c["post_id"] for c in result["borderline"]]
+
+    assert "short_high" in approved_ids
+    assert "normal_ok" in approved_ids
+    assert "short_borderline" in borderline_ids
+    assert len(result["approved"]) == 2
+    assert len(result["borderline"]) == 1
+
+
+def test_borderline_policy_approve_top_short_clip_threshold(mock_db):
+    """
+    Under approve_top policy in human_review_node:
+    Short clips (< 8.0s) must meet short_clip_min_score (7.5) to be promoted,
+    while normal clips only require min_publish_score (6.5).
+    """
+    from graph.nodes.review import human_review_node
+
+    config = {
+        "scoring": {
+            "min_publish_score": 6.5,
+            "short_clip_duration_threshold": 8.0,
+            "short_clip_min_score": 7.5,
+        }
+    }
+    borderline_clips = [
+        # Short clip with score >= 7.5 -> Approved
+        {"post_id": "b_short_high", "title": "Short Top", "score": 7.8, "duration": 6.5},
+        # Normal clip with score 6.8 (>= 6.5) -> Approved
+        {"post_id": "b_normal_ok", "title": "Normal Ok", "score": 6.8, "duration": 20.0},
+        # Short clip with score 6.9 (< 7.5) -> Rejected
+        {"post_id": "b_short_low", "title": "Short Below Bar", "score": 6.9, "duration": 7.2},
+    ]
+
+    state = {
+        "borderline": borderline_clips,
+        "approved": [],
+        "rejected": [],
+        "target_count": 2,
+        "borderline_policy": "approve_top",
+        "no_review": True,
+        "target_date": "2026-11-15",
+    }
+
+    result = human_review_node(state, mock_db, config=config)
+    approved_ids = [c["post_id"] for c in result["approved"]]
+    rejected_ids = [c["post_id"] for c in result["rejected"]]
+
+    assert "b_short_high" in approved_ids
+    assert "b_normal_ok" in approved_ids
+    assert "b_short_low" in rejected_ids
+    assert len(result["approved"]) == 2
+    assert len(result["rejected"]) == 1
+
+
+

@@ -70,7 +70,7 @@ def build_curation_graph(
         return decide_node(state, config, db)
 
     def _human_review(state: CurationState) -> Dict[str, Any]:
-        return human_review_node(state, db)
+        return human_review_node(state, db, config=config)
 
     def _backfill(state: CurationState) -> Dict[str, Any]:
         return backfill_node(state, db)

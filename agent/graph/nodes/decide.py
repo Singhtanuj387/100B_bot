@@ -40,10 +40,15 @@ def decide_node(
     scoring_cfg = config.get("scoring", {})
     llm_weight = float(scoring_cfg.get("llm_weight", 0.70))
     eng_weight = float(scoring_cfg.get("engagement_weight", 0.30))
-    min_publish_score = float(scoring_cfg.get("min_publish_score", scoring_cfg.get("auto_approve_threshold", 6.5)))
+    min_publish_score = float(state.get("min_publish_score", scoring_cfg.get("min_publish_score", scoring_cfg.get("auto_approve_threshold", 6.5))))
+    short_duration_thresh = float(state.get("short_clip_duration_threshold", scoring_cfg.get("short_clip_duration_threshold", 8.0)))
+    short_clip_min_score = float(state.get("short_clip_min_score", scoring_cfg.get("short_clip_min_score", 7.5)))
     auto_reject_thresh = float(scoring_cfg.get("auto_reject_threshold", 5.0))
 
-    logger.info(f"--- [Node: DECIDE] Rank-based routing for {len(candidates)} candidates (Target: {target_count}, Min Score: {min_publish_score}) ---")
+    logger.info(
+        f"--- [Node: DECIDE] Rank-based routing for {len(candidates)} candidates "
+        f"(Target: {target_count}, Min Score: {min_publish_score}, Short Clip Min: {short_clip_min_score} for <{short_duration_thresh}s) ---"
+    )
 
     valid_candidates: List[Dict[str, Any]] = []
 
@@ -129,18 +134,29 @@ def decide_node(
     newly_approved: List[Dict[str, Any]] = []
     chosen_scores: List[float] = []
 
-    # 4. Auto-approve top N as long as score >= min_publish_score
+    # 4. Auto-approve top N as long as score >= min_publish_score (or short_clip_min_score for short clips)
     for cand in valid_candidates:
         post_id = cand.get("post_id", "unknown")
         file_hash = cand.get("file_hash", "")
         h_score = float(cand.get("score", 0.0))
+        cand_dur = float(cand.get("duration") or 0.0)
+        is_short = 0.0 < cand_dur < short_duration_thresh
+        effective_min = max(min_publish_score, short_clip_min_score) if is_short else min_publish_score
 
-        if len(newly_approved) < slots_needed and h_score >= min_publish_score:
+        if len(newly_approved) < slots_needed and h_score >= effective_min:
             cand["status"] = "auto_approved"
             newly_approved.append(cand)
             chosen_scores.append(h_score)
-            logger.success(f"Auto-approved top clip {post_id} (Rank #{len(approved) + len(newly_approved)}, Score: {h_score:.2f})")
+            logger.success(
+                f"Auto-approved top clip {post_id} (Rank #{len(approved) + len(newly_approved)}, "
+                f"Score: {h_score:.2f}, Duration: {cand_dur:.1f}s)"
+            )
             db.record_decision(post_id, file_hash, h_score, "auto_approved", cand.get("reason", ""), target_date)
+        elif is_short and h_score >= min_publish_score:
+            logger.info(
+                f"Short clip {post_id} ({cand_dur:.1f}s) scored {h_score:.2f} >= min_publish_score ({min_publish_score}) "
+                f"but below short-clip threshold ({short_clip_min_score}); held for borderline pool."
+            )
 
     approved.extend(newly_approved)
 
@@ -154,12 +170,20 @@ def decide_node(
         post_id = cand.get("post_id", "unknown")
         file_hash = cand.get("file_hash", "")
         h_score = float(cand.get("score", 0.0))
+        cand_dur = float(cand.get("duration") or 0.0)
+        is_short = 0.0 < cand_dur < short_duration_thresh
         reason = cand.get("reason", "")
 
         if h_score >= auto_reject_thresh:
             cand["status"] = "borderline"
             borderline.append(cand)
-            logger.info(f"Borderline {post_id} (Score: {h_score:.2f} < lowest chosen {lowest_chosen_score:.2f}) -> Borderline Pool")
+            if is_short and h_score >= min_publish_score:
+                logger.info(
+                    f"Borderline short clip {post_id} ({cand_dur:.1f}s, Score: {h_score:.2f} >= min_publish {min_publish_score} "
+                    f"but < short_clip_min_score {short_clip_min_score}) -> Borderline Pool"
+                )
+            else:
+                logger.info(f"Borderline {post_id} (Score: {h_score:.2f} < lowest chosen {lowest_chosen_score:.2f}) -> Borderline Pool")
             db.record_decision(post_id, file_hash, h_score, "borderline", reason, target_date)
         else:
             rej_reason = f"Score too low ({h_score:.2f} < {auto_reject_thresh}): {reason}"

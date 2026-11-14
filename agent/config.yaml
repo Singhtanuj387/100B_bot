@@ -58,15 +58,17 @@ scoring:
   engagement_weight: 0.30               # Weight given to normalized upvotes/likes
   min_publish_score: 6.5                # Minimum threshold for daily top rank selection
   auto_approve_threshold: 6.5           # Top-N ranked with score >= 6.5 are auto-approved
+  short_clip_duration_threshold: 8.0    # Clips under this length (seconds) are considered short clips
+  short_clip_min_score: 7.5             # Higher score threshold required for short clips (< 8s) to justify daily slot
   auto_reject_threshold: 5.0            # < 5.0: Auto rejected; [5.0, lowest_chosen): Borderline
   human_review_min: 5.0                 # 5.0 to lowest chosen: Sent to borderline review
   human_review_max: 6.49
 
 # Zero-cost pre-filtering & audio language check
 filters:
-  min_duration_seconds: 5.0             # Read from scraper/config.yaml (one source of truth)
+  min_duration_seconds: 6.0             # Read from scraper/config.yaml (one source of truth)
   max_duration_seconds: 90.0            # YouTube Shorts allow up to 180s (since Oct 2024); 90s is quality choice
-  min_duration: 5.0                     # Backward-compatible alias
+  min_duration: 6.0                     # Backward-compatible alias
   max_duration: 90.0                    # Backward-compatible alias
   min_resolution_height: 480            # Minimum vertical resolution
   blocked_words:

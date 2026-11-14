@@ -1,4 +1,4 @@
-from typing import Dict, Any, List
+from typing import Dict, Any, List, Optional
 from loguru import logger
 from langgraph.types import interrupt
 
@@ -6,7 +6,11 @@ from graph.state import CurationState
 from core.db import AgentDatabase
 
 
-def human_review_node(state: CurationState, db: AgentDatabase) -> Dict[str, Any]:
+def human_review_node(
+    state: CurationState,
+    db: AgentDatabase,
+    config: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
     """
     Human review node for borderline candidates (score 5.0 to 7.9).
     Uses LangGraph interrupt() to yield control to the caller (outside the graph).
@@ -31,7 +35,10 @@ def human_review_node(state: CurationState, db: AgentDatabase) -> Dict[str, Any]
     interactive = sys_stdin_is_interactive() and not state.get("no_review", False)
     policy = state.get("borderline_policy") or ("review" if interactive else "approve_top")
     target_count = int(state.get("target_count", 6))
-    min_publish_score = float(state.get("min_publish_score", 6.5))
+    cfg_scoring = (config or {}).get("scoring", {})
+    min_publish_score = float(state.get("min_publish_score", cfg_scoring.get("min_publish_score", 6.5)))
+    short_duration_thresh = float(state.get("short_clip_duration_threshold", cfg_scoring.get("short_clip_duration_threshold", 8.0)))
+    short_clip_min_score = float(state.get("short_clip_min_score", cfg_scoring.get("short_clip_min_score", 7.5)))
 
     logger.info(f"Borderline handling: {len(borderline)} clips | Policy: '{policy}' | Interactive: {interactive}")
 
@@ -57,7 +64,7 @@ def human_review_node(state: CurationState, db: AgentDatabase) -> Dict[str, Any]
         }
 
     if policy == "approve_top" or not interactive:
-        # Fill remaining slots from the best borderline clips (still at or above min_publish_score)
+        # Fill remaining slots from the best borderline clips (still at or above effective min score)
         slots_remaining = max(0, target_count - len(approved))
         sorted_borderline = sorted(borderline, key=lambda x: float(x.get("score", 0.0)), reverse=True)
 
@@ -66,7 +73,11 @@ def human_review_node(state: CurationState, db: AgentDatabase) -> Dict[str, Any]
 
         for b in sorted_borderline:
             score = float(b.get("score", 0.0))
-            if len(new_approved) < slots_remaining and score >= min_publish_score:
+            cand_dur = float(b.get("duration") or 0.0)
+            is_short = 0.0 < cand_dur < short_duration_thresh
+            effective_min = max(min_publish_score, short_clip_min_score) if is_short else min_publish_score
+
+            if len(new_approved) < slots_remaining and score >= effective_min:
                 b["human_decision"] = "approved"
                 b["status"] = "borderline_approved"
                 b["caption_edited_by_human"] = False
@@ -76,23 +87,28 @@ def human_review_node(state: CurationState, db: AgentDatabase) -> Dict[str, Any]
                     b.get("file_hash", ""),
                     score,
                     "unattended_approved",
-                    f"Filled slot via borderline policy 'approve_top' (score {score:.2f} >= {min_publish_score})",
+                    f"Filled slot via borderline policy 'approve_top' (score {score:.2f} >= {effective_min})",
                     target_date,
                 )
             else:
                 b["human_decision"] = "rejected"
                 new_rejected.append(b)
+                rej_msg = (
+                    f"Borderline short clip not selected under 'approve_top' (score {score:.2f} < {effective_min})"
+                    if is_short and score >= min_publish_score
+                    else f"Borderline not selected under 'approve_top' (score {score:.2f})"
+                )
                 db.record_decision(
                     b.get("post_id", "unknown"),
                     b.get("file_hash", ""),
                     score,
                     "unattended_rejected",
-                    f"Borderline not selected under 'approve_top' (score {score:.2f})",
+                    rej_msg,
                     target_date,
                 )
 
         logger.info(
-            f"Policy 'approve_top': Promoted {len(new_approved)} clip(s) to approved (Score >= {min_publish_score}); "
+            f"Policy 'approve_top': Promoted {len(new_approved)} clip(s) to approved (Score >= min_publish/short threshold); "
             f"rejected {len(new_rejected)} clip(s)."
         )
         return {
