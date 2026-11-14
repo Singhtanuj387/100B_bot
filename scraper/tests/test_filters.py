@@ -238,3 +238,89 @@ def test_downloader_remote_probe_fallback():
             assert not dest_short.exists()
 
 
+def test_probe_hls_duration_http_direct_media_playlist():
+    from unittest.mock import patch, MagicMock
+    from core.downloader import probe_hls_duration_http
+
+    media_playlist_text = """#EXTM3U
+#EXT-X-VERSION:3
+#EXT-X-TARGETDURATION:5
+#EXTINF:4.000,
+segment0.ts
+#EXTINF:4.500,
+segment1.ts
+#EXTINF:2.500,
+segment2.ts
+#EXT-X-ENDLIST"""
+
+    mock_resp = MagicMock()
+    mock_resp.status_code = 200
+    mock_resp.text = media_playlist_text
+
+    with patch("requests.get", return_value=mock_resp):
+        dur = probe_hls_duration_http("https://v.redd.it/dummy/media.m3u8")
+        assert dur == 11.0
+
+
+def test_probe_hls_duration_http_master_playlist_variants():
+    from unittest.mock import patch, MagicMock
+    from core.downloader import probe_hls_duration_http
+
+    master_text = """#EXTM3U
+#EXT-X-VERSION:4
+#EXT-X-STREAM-INF:BANDWIDTH=800000,RESOLUTION=640x360
+CMAF_360.m3u8
+#EXT-X-STREAM-INF:BANDWIDTH=1500000,RESOLUTION=1280x720
+CMAF_720.m3u8"""
+
+    variant_text = """#EXTM3U
+#EXT-X-TARGETDURATION:4
+#EXTINF:3.800,
+CMAF_360_0.m4s
+#EXTINF:3.800,
+CMAF_360_1.m4s
+#EXTINF:1.500,
+CMAF_360_2.m4s
+#EXT-X-ENDLIST"""
+
+    def mock_get(url, *args, **kwargs):
+        resp = MagicMock()
+        resp.status_code = 200
+        if "HLSPlaylist.m3u8" in url:
+            resp.text = master_text
+        else:
+            resp.text = variant_text
+        return resp
+
+    with patch("requests.get", side_effect=mock_get):
+        dur = probe_hls_duration_http("https://v.redd.it/abc1234/HLSPlaylist.m3u8")
+        assert dur == 9.1
+
+
+def test_probe_remote_duration_reddit_hls_integration():
+    from unittest.mock import patch, MagicMock
+    from core.downloader import probe_remote_duration
+
+    master_text = """#EXTM3U
+#EXT-X-STREAM-INF:BANDWIDTH=1200000,RESOLUTION=720x1280
+CMAF_720.m3u8"""
+
+    # 112.93s video like the real Reddit test clip
+    segments = "\n".join([f"#EXTINF:4.000,\nseg_{i}.ts" for i in range(28)]) + "\n#EXTINF:0.933,\nseg_last.ts\n#EXT-X-ENDLIST"
+    variant_text = f"#EXTM3U\n#EXT-X-TARGETDURATION:4\n{segments}"
+
+    def mock_get(url, *args, **kwargs):
+        resp = MagicMock()
+        resp.status_code = 200
+        if "HLSPlaylist.m3u8" in url:
+            resp.text = master_text
+        else:
+            resp.text = variant_text
+        return resp
+
+    with patch("requests.get", side_effect=mock_get):
+        # Pass a bare v.redd.it URL - probe_remote_duration should resolve to HLSPlaylist.m3u8
+        dur = probe_remote_duration("https://v.redd.it/336ynt6hri1i1")
+        assert dur == 112.93
+
+

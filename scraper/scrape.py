@@ -281,6 +281,8 @@ def main():
                     else:
                         if "Duplicate detected" in msg:
                             stats["media_duplicates"] += 1
+                        elif "Dropped before download" in msg or "duration_too_" in msg:
+                            pass
                         else:
                             stats["failed_by_source"][cand.source] += 1
                         if "Dropped before download" in msg or "Remote probe dropped" in msg:
@@ -294,6 +296,7 @@ def main():
                             elif "duration_too_short" in msg:
                                 stats["dropped_too_short"] += 1
                                 src_drop["too_short"] += 1
+                            stats["filtered"][msg] = stats["filtered"].get(msg, 0) + 1
                         logger.warning(f"Skipped candidate [{cand.source}] '{cand.title[:40]}': {msg}")
                 except Exception as exc:
                     stats["failed_by_source"][cand.source] += 1
@@ -439,6 +442,8 @@ def main():
                 else:
                     if "Duplicate detected" in msg:
                         stats["media_duplicates"] += 1
+                    elif "Dropped before download" in msg or "duration_too_" in msg:
+                        pass
                     else:
                         stats["failed_by_source"][cand.source] += 1
                     if "Dropped before download" in msg or "Remote probe dropped" in msg:
@@ -452,6 +457,7 @@ def main():
                         elif "duration_too_short" in msg:
                             stats["dropped_too_short"] += 1
                             src_drop["too_short"] += 1
+                        stats["filtered"][msg] = stats["filtered"].get(msg, 0) + 1
                     logger.warning(f"Skipped candidate [{cand.source}] '{cand.title[:40]}': {msg}")
             except Exception as exc:
                 stats["failed_by_source"][cand.source] += 1

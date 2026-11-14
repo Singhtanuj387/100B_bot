@@ -3,8 +3,11 @@ import re
 import json
 import shutil
 import subprocess
+import urllib.parse
+from urllib.parse import urljoin
 from pathlib import Path
 from typing import Optional, Dict, Any, Tuple
+import requests
 from loguru import logger
 import yt_dlp
 
@@ -50,10 +53,83 @@ def probe_media_file(filepath: Path) -> Dict[str, Any]:
         return {"duration": 0.0, "width": 0, "height": 0, "has_audio": False}
 
 
-def probe_remote_duration(stream_url: str, timeout: int = 10) -> Optional[float]:
+def probe_hls_duration_http(playlist_url: str, timeout: int = 5) -> Optional[float]:
     """
-    Quick ffprobe probe on remote stream URL / playlist to determine duration
-    before performing a full media download.
+    Fetch an HLS playlist via standard HTTP request, pick a variant stream if master,
+    and add up the #EXTINF segment lengths to determine total duration in under a second.
+    """
+    headers = {
+        "User-Agent": os.getenv(
+            "REDDIT_USER_AGENT",
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        )
+    }
+    if "YOUR_USERNAME" in headers["User-Agent"]:
+        headers["User-Agent"] = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+
+    try:
+        resp = requests.get(playlist_url, headers=headers, timeout=timeout)
+        if resp.status_code != 200 or not resp.text:
+            return None
+
+        text = resp.text
+
+        # 1. Direct media playlist: check for #EXTINF segment tags directly
+        extinfs = [float(x) for x in re.findall(r"#EXTINF:\s*([0-9.]+)", text)]
+        if extinfs:
+            total_dur = sum(extinfs)
+            if total_dur > 0:
+                return round(total_dur, 2)
+
+        # 2. Master playlist: parse variant stream playlists
+        lines = [line.strip() for line in text.splitlines() if line.strip()]
+        variant_rel = None
+
+        # Look for the variant URL following #EXT-X-STREAM-INF
+        for i, line in enumerate(lines):
+            if line.startswith("#EXT-X-STREAM-INF"):
+                for j in range(i + 1, len(lines)):
+                    candidate_line = lines[j]
+                    if not candidate_line.startswith("#"):
+                        variant_rel = candidate_line
+                        break
+                if variant_rel:
+                    break
+
+        # Fallback: find any line ending with .m3u8 or containing .m3u8 that is not a comment
+        if not variant_rel:
+            for line in lines:
+                if not line.startswith("#") and ".m3u8" in line:
+                    variant_rel = line
+                    break
+
+        if not variant_rel:
+            return None
+
+        # Resolve relative or absolute variant URL
+        variant_url = urljoin(playlist_url, variant_rel)
+        resp_var = requests.get(variant_url, headers=headers, timeout=timeout)
+        if resp_var.status_code != 200 or not resp_var.text:
+            return None
+
+        v_extinfs = [float(x) for x in re.findall(r"#EXTINF:\s*([0-9.]+)", resp_var.text)]
+        if v_extinfs:
+            total_dur = sum(v_extinfs)
+            if total_dur > 0:
+                return round(total_dur, 2)
+
+    except Exception as e:
+        logger.debug(f"HTTP HLS duration probe failed for {playlist_url}: {e}")
+
+    return None
+
+
+def probe_remote_duration(stream_url: str, timeout: int = 5) -> Optional[float]:
+    """
+    Fast remote duration probe:
+    1. Local file -> probe_media_file
+    2. Reddit / HLS stream URL -> fetch HLS playlist via HTTP and sum #EXTINF lengths (< 1s)
+    3. Fallback -> ffprobe with a short timeout
     """
     if not stream_url:
         return None
@@ -64,27 +140,35 @@ def probe_remote_duration(stream_url: str, timeout: int = 10) -> Optional[float]
         dur = probe.get("duration", 0.0)
         return dur if dur > 0 else None
 
-    # For Reddit videos, probe HLS playlist directly if v.redd.it
-    probe_url = stream_url
-    if "v.redd.it" in stream_url and not stream_url.endswith((".m3u8", ".mpd", ".mp4")):
-        base_v = stream_url.split("?")[0].rstrip("/")
-        probe_url = f"{base_v}/HLSPlaylist.m3u8"
+    # For Reddit videos or HLS streams, construct/identify HLS playlist URL
+    hls_url = None
+    m = re.search(r"https?://v\.redd\.it/([a-zA-Z0-9]+)", stream_url)
+    if m:
+        hls_url = f"https://v.redd.it/{m.group(1)}/HLSPlaylist.m3u8"
+    elif ".m3u8" in stream_url:
+        hls_url = stream_url
 
+    if hls_url:
+        dur = probe_hls_duration_http(hls_url, timeout=timeout)
+        if dur is not None and dur > 0:
+            return dur
+
+    # Secondary fallback for non-HLS streams: fast ffprobe with short timeout
     cmd = [
         "ffprobe", "-v", "error",
         "-show_entries", "format=duration",
         "-of", "default=noprint_wrappers=1:nokey=1",
-        probe_url
+        stream_url
     ]
     try:
-        res = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+        res = subprocess.run(cmd, capture_output=True, text=True, timeout=min(timeout, 5))
         if res.returncode == 0 and res.stdout.strip():
             first_line = res.stdout.strip().split("\n")[0]
             val = float(first_line)
             if val > 0:
-                return val
+                return round(val, 2)
     except Exception as e:
-        logger.debug(f"ffprobe remote duration probe failed for {probe_url}: {e}")
+        logger.debug(f"ffprobe remote duration probe fallback failed for {stream_url}: {e}")
 
     return None
 
@@ -306,9 +390,20 @@ class VideoDownloader:
         was_probed = False
         if dur_to_check is None:
             # RSS or stream without duration in listing metadata: probe stream URL before downloading full file
-            probe_target = candidate.video_url or candidate.post_url
-            if getattr(candidate, "extra", None) and isinstance(candidate.extra, dict) and candidate.extra.get("fallback_url"):
-                probe_target = candidate.extra.get("fallback_url")
+            probe_target = None
+            extra_dict = getattr(candidate, "extra", None) or {}
+            cand_urls = [
+                getattr(candidate, "video_url", None),
+                extra_dict.get("fallback_url") if isinstance(extra_dict, dict) else None,
+                getattr(candidate, "post_url", None),
+            ]
+            for u in cand_urls:
+                if u and "v.redd.it" in u:
+                    probe_target = u
+                    break
+            if not probe_target:
+                probe_target = candidate.video_url or candidate.post_url
+
             probed_dur = probe_remote_duration(probe_target)
             if probed_dur is not None:
                 candidate.duration = probed_dur

@@ -122,6 +122,10 @@ class ScraperTool:
             )
             if res.returncode != 0:
                 logger.warning(f"Scraper --list-only returned code {res.returncode}: {res.stderr[-300:]}")
+            if res.stdout:
+                for line in res.stdout.splitlines():
+                    if "dropped before download:" in line:
+                        logger.info(line.strip())
             if candidates_out.is_file():
                 with open(candidates_out, "r", encoding="utf-8") as f:
                     return json.load(f)
@@ -176,6 +180,10 @@ class ScraperTool:
             )
             if res.returncode != 0:
                 logger.warning(f"Scraper --download-only code {res.returncode}: {res.stderr[-300:]}")
+            if res.stdout:
+                for line in res.stdout.splitlines():
+                    if "dropped before download:" in line or "Successfully Downloaded" in line:
+                        logger.info(line.strip())
             return res.returncode == 0
         except Exception as e:
             logger.error(f"Error downloading candidates: {e}")
