@@ -91,6 +91,35 @@ class TestJudgeTimeout(unittest.TestCase):
         self.assertIsNone(failed_cand.get("llm_score"))
         self.assertNotEqual(failed_cand.get("llm_score"), 5.0)
 
+    @patch("graph.nodes.judge.evaluate_single_candidate")
+    def test_judge_timeout_scales_with_candidate_count(self, mock_eval):
+        """Judge timeout scales dynamically based on candidate count (e.g. 60s per clip)."""
+        mock_eval.side_effect = lambda cand, *args, **kwargs: {
+            **cand,
+            "llm_score": 8.0,
+            "is_english_or_no_speech": True,
+            "is_safe_for_ads": True,
+            "has_visible_watermark": False,
+            "is_broadcast_or_movie": False,
+        }
+
+        # 10 clips with 60s per clip -> 600s total timeout
+        candidates = [{"post_id": f"c_{i}"} for i in range(10)]
+        config = {
+            "general": {"judge_workers": 2},
+            "cost_limits": {
+                "judge_timeout_seconds_per_clip": 60.0,
+                "judge_total_timeout_min_seconds": 300.0,
+                "judge_max_failure_rate": 0.30,
+            },
+            "vision": {"sample_frames": 3, "target_width": 360},
+        }
+        state = {"candidates": candidates}
+        res = judge_node(state, config, self.mock_llm, self.db)
+        self.assertEqual(len(res["candidates"]), 10)
+        for c in res["candidates"]:
+            self.assertEqual(c["llm_score"], 8.0)
+
 
 if __name__ == "__main__":
     unittest.main()

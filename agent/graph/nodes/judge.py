@@ -199,18 +199,28 @@ def judge_node(
     target_width = int(vision_cfg.get("target_width", 360))
     parallel_workers = int(config.get("general", {}).get("judge_workers", 4))
 
-    # Total time limit for the judge stage (default 300s = 5 minutes)
+    # Scalable time limit for the judge stage (scales with candidate count, e.g. 60s/clip)
     judge_start_time = time.time()
     cost_limits = config.get("cost_limits", {})
-    max_judge_time = float(
-        cost_limits.get("judge_total_timeout_seconds")
-        or config.get("general", {}).get("judge_total_timeout_seconds")
-        or 300.0
-    )
+    num_cands = max(1, len(candidates))
+
+    if "judge_timeout_seconds_per_clip" in cost_limits:
+        sec_per_clip = float(cost_limits["judge_timeout_seconds_per_clip"])
+        min_floor = float(cost_limits.get("judge_total_timeout_min_seconds", 300.0))
+        max_judge_time = max(min_floor, float(num_cands) * sec_per_clip)
+    elif "judge_total_timeout_seconds" in cost_limits or "judge_total_timeout_seconds" in config.get("general", {}):
+        max_judge_time = float(
+            cost_limits.get("judge_total_timeout_seconds")
+            or config.get("general", {}).get("judge_total_timeout_seconds")
+        )
+    else:
+        # Default scaling: 60s per clip, minimum 300s
+        min_floor = float(cost_limits.get("judge_total_timeout_min_seconds", 300.0))
+        max_judge_time = max(min_floor, float(num_cands) * 60.0)
 
     logger.info(
         f"--- [Node: JUDGE] Evaluating {len(candidates)} candidates "
-        f"({parallel_workers} workers | total timeout limit: {max_judge_time:.0f}s) ---"
+        f"({parallel_workers} workers | total timeout limit: {max_judge_time:.0f}s [{max_judge_time/60:.1f}m]) ---"
     )
 
     judged_candidates = []

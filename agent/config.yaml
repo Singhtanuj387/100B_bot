@@ -16,7 +16,8 @@ cost_limits:
   max_cost_per_run_usd: 2.00   # Maximum LLM cost cap per curation run (USD)
   max_llm_calls_per_run: 100
   request_timeout_seconds: 75  # Per-call timeout (60-90s) for every Google / LLM request to prevent hanging
-  judge_total_timeout_seconds: 300 # Total time limit (5 mins) for entire vision judge node
+  judge_timeout_seconds_per_clip: 60 # Scalable time limit (60s per candidate clip, e.g. 6000s for 100 clips)
+  judge_total_timeout_min_seconds: 300 # Minimum floor (5 mins) for vision judge stage
   judge_max_failure_rate: 0.30 # Maximum allowed judge failure rate (30%) before aborting run
 
 # Per-Model Quota & Rate Limit Protection (Peak RPM, TPM, RPD)
