@@ -43,9 +43,12 @@ class RedditSource(BaseSource):
         reg_path = config.get("registry", {}).get("db_path") or config.get("registry_db_path")
         if not reg_path:
             for cand_p in [
-                Path("agent/data/agent.db"),
+                Path.cwd() / "agent" / "data" / "agent.db",
                 Path(__file__).resolve().parent.parent.parent / "agent" / "data" / "agent.db",
+                Path(__file__).resolve().parents[2] / "agent" / "data" / "agent.db",
                 Path(__file__).resolve().parent.parent / "data" / "agent.db",
+                Path("agent/data/agent.db"),
+                Path("../agent/data/agent.db"),
             ]:
                 if cand_p.is_file():
                     reg_path = str(cand_p.resolve())
@@ -95,7 +98,7 @@ class RedditSource(BaseSource):
                         WHERE source_type = ? AND name = ? AND listing_mode = ?
                     """, (cursor, source_type, name, listing_mode))
                 conn.close()
-                logger.debug(f"Saved pagination cursor {cursor} for ({source_type}, {name}, {listing_mode})")
+                logger.info(f"Saved pagination cursor '{cursor}' for ({source_type}, {name}, {listing_mode}) to registry.")
         except Exception as e:
             logger.debug(f"Error saving cursor to registry: {e}")
 
@@ -151,7 +154,7 @@ class RedditSource(BaseSource):
         eff = []
         for sub in self.subreddits:
             for l in self.listings:
-                eff.append({"type": "subreddit", "name": sub, "listing": l, "cursor": None})
+                eff.append({"type": "subreddit", "source_type": "subreddit", "name": sub, "listing": l, "listing_mode": l, "cursor": None})
         return eff
 
     def fetch_candidates(self, target_count: int) -> List[VideoCandidate]:
@@ -203,9 +206,9 @@ class RedditSource(BaseSource):
             if len(candidates) >= target_count:
                 break
 
-            src_type = src.get("type", "subreddit")
+            src_type = src.get("source_type") or src.get("type") or "subreddit"
             src_name = src.get("name", "funny")
-            listing = src.get("listing", "hot")
+            listing = src.get("listing_mode") or src.get("listing") or "hot"
             time_filter = listing.replace("top_", "") if listing.startswith("top_") else "all"
 
             # hot listings must not use a cursor; archive listings and search queries use it
@@ -217,6 +220,9 @@ class RedditSource(BaseSource):
             for page in range(max_pages):
                 if len(candidates) >= target_count:
                     break
+
+                page_label = f"{page + 1}/{max_pages}" if uses_cursor else "1/1"
+                logger.info(f"[PRAW:{src_type}:{src_name}:{listing}] Fetching page {page_label} (cursor={cursor or 'start'})...")
 
                 self.rate_limiter.wait("reddit")
                 page_limit = 100 if uses_cursor else self.limit
@@ -306,7 +312,7 @@ class RedditSource(BaseSource):
                                     "subreddit": src_name if src_type == "subreddit" else "all",
                                     "source_feed": "praw",
                                     "fallback_url": fallback_url,
-                                    "pagination_cursor": fullname,
+                                    "pagination_cursor": fullname if listing != "hot" else None,
                                 },
                             )
                             candidates.append(candidate)
@@ -315,6 +321,11 @@ class RedditSource(BaseSource):
                     if uses_cursor and last_fullname:
                         self._save_cursor(src_type, src_name, listing, last_fullname)
                         cursor = last_fullname
+
+                    logger.info(
+                        f"[PRAW:{src_type}:{src_name}:{listing}] Page {page + 1}: found {page_new_count} candidates "
+                        f"({len(candidates)}/{target_count} total). Next cursor: {last_fullname or 'none'}"
+                    )
 
                     if page_new_count == 0:
                         consecutive_empty += 1
@@ -345,9 +356,9 @@ class RedditSource(BaseSource):
             if len(candidates) >= target_count or consecutive_errors >= 3:
                 break
 
-            src_type = src.get("type", "subreddit")
+            src_type = src.get("source_type") or src.get("type") or "subreddit"
             src_name = src.get("name", "funny")
-            listing = src.get("listing", "hot")
+            listing = src.get("listing_mode") or src.get("listing") or "hot"
             time_filter = listing.replace("top_", "") if listing.startswith("top_") else "all"
 
             # hot listings must not use a cursor; archive listings and search queries use it
@@ -359,6 +370,9 @@ class RedditSource(BaseSource):
             for page in range(max_pages):
                 if len(candidates) >= target_count:
                     break
+
+                page_label = f"{page + 1}/{max_pages}" if uses_cursor else "1/1"
+                logger.info(f"[JSON:{src_type}:{src_name}:{listing}] Fetching page {page_label} (cursor={cursor or 'start'})...")
 
                 self.rate_limiter.wait("reddit")
                 page_limit = 100 if uses_cursor else self.limit
@@ -474,7 +488,7 @@ class RedditSource(BaseSource):
                                 "listing": listing,
                                 "source_feed": "json",
                                 "fallback_url": fallback_url,
-                                "pagination_cursor": fullname,
+                                "pagination_cursor": fullname if listing != "hot" else None,
                             },
                         )
                         candidates.append(candidate)
@@ -484,6 +498,11 @@ class RedditSource(BaseSource):
                     if uses_cursor and next_cursor:
                         self._save_cursor(src_type, src_name, listing, next_cursor)
                         cursor = next_cursor
+
+                    logger.info(
+                        f"[JSON:{src_type}:{src_name}:{listing}] Page {page + 1}: found {page_new_count} candidates "
+                        f"({len(candidates)}/{target_count} total). Next cursor: {next_cursor or 'none'}"
+                    )
 
                     if page_new_count == 0 or not children:
                         consecutive_empty += 1
@@ -552,19 +571,24 @@ class RedditSource(BaseSource):
             if len(candidates) >= target_count:
                 break
 
-            src_type = src.get("type", "subreddit")
-            listing = src.get("listing", "hot")
+            src_type = src.get("source_type") or src.get("type") or "subreddit"
+            src_name = src.get("name", "funny")
+            listing = src.get("listing_mode") or src.get("listing") or "hot"
             time_filter = listing.replace("top_", "") if listing.startswith("top_") else "all"
 
             # hot listings must not use a cursor; archive listings and search queries use it
             uses_cursor = (listing in ["top_week", "top_month", "top_year", "top_all"] or src_type == "search_query") and listing != "hot"
-            cursor = self._get_cursor(src_type, src.get("name", ""), listing, src.get("cursor") or src.get("pagination_cursor")) if uses_cursor else None
+            cursor = self._get_cursor(src_type, src_name, listing, src.get("cursor") or src.get("pagination_cursor")) if uses_cursor else None
             max_pages = self.max_pages_per_source if uses_cursor else 1
             consecutive_empty = 0
 
             for page in range(max_pages):
                 if len(candidates) >= target_count:
                     break
+
+                page_label = f"{page + 1}/{max_pages}" if uses_cursor else "1/1"
+                source_label = src_name
+                logger.info(f"[RSS:{src_type}:{src_name}:{listing}] Fetching page {page_label} (cursor={cursor or 'start'})...")
 
                 self.rate_limiter.wait("reddit")
 
@@ -690,19 +714,24 @@ class RedditSource(BaseSource):
                                 "listing": listing,
                                 "feed_rank": entry_idx,
                                 "is_estimated_score": True,
-                                "pagination_cursor": fullname,
+                                "pagination_cursor": fullname if listing != "hot" else None,
                             },
                         ))
                         page_new_count += 1
 
                     if uses_cursor and last_fullname:
-                        self._save_cursor(src_type, src.get("name", ""), listing, last_fullname)
+                        self._save_cursor(src_type, src_name, listing, last_fullname)
                         cursor = last_fullname
+
+                    logger.info(
+                        f"[RSS:{src_type}:{source_label}:{listing}] Page {page + 1}: found {page_new_count} candidates "
+                        f"({len(candidates)}/{target_count} total). Next cursor: {last_fullname or 'none'}"
+                    )
 
                     if page_new_count == 0 or not entries:
                         consecutive_empty += 1
                         if consecutive_empty >= 3 and uses_cursor:
-                            self._mark_exhausted(src_type, src.get("name", ""), listing)
+                            self._mark_exhausted(src_type, src_name, listing)
                             break
                         if not last_fullname:
                             break

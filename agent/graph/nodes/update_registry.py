@@ -55,9 +55,11 @@ def update_registry_node(
         source_stats[key]["downloaded"] += 1
         source_stats[key]["approved"] += 1
 
-        cursor = (v.get("extra") or {}).get("pagination_cursor") or (v.get("meta", {}).get("extra", {})).get("pagination_cursor")
-        if cursor:
-            source_stats[key]["cursor"] = cursor
+        # Hot listings must never store or update pagination cursors
+        if key[2] != "hot":
+            cursor = (v.get("extra") or {}).get("pagination_cursor") or (v.get("meta", {}).get("extra", {})).get("pagination_cursor")
+            if cursor:
+                source_stats[key]["cursor"] = cursor
 
     # 2. Process Rejected Clips
     for v in rejected_list:
@@ -80,12 +82,15 @@ def update_registry_node(
         reason = v.get("reason") or v.get("decision_reason") or "unspecified"
         source_stats[key]["reasons"][reason] = source_stats[key]["reasons"].get(reason, 0) + 1
 
-        cursor = (v.get("extra") or {}).get("pagination_cursor") or (v.get("meta", {}).get("extra", {})).get("pagination_cursor")
-        if cursor:
-            source_stats[key]["cursor"] = cursor
+        # Hot listings must never store or update pagination cursors
+        if key[2] != "hot":
+            cursor = (v.get("extra") or {}).get("pagination_cursor") or (v.get("meta", {}).get("extra", {})).get("pagination_cursor")
+            if cursor:
+                source_stats[key]["cursor"] = cursor
 
     # 3. Update Database for each source
     for (s_type, s_name, s_mode), data in source_stats.items():
+        cursor_to_save = data["cursor"] if s_mode != "hot" else None
         db.update_source_metrics(
             source_type=s_type,
             name=s_name,
@@ -95,7 +100,7 @@ def update_registry_node(
             approved=data["approved"],
             rejected=data["rejected"],
             reject_reasons=data["reasons"],
-            cursor=data["cursor"],
+            cursor=cursor_to_save,
             run_date=target_date,
         )
         logger.info(

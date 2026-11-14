@@ -652,6 +652,8 @@ class AgentDatabase:
                     logger.info(f"Paused active source ({source_type}, {name}, {listing_mode}) due to low yield ({smoothed_yield:.2f})")
 
             new_cursor = cursor or row["pagination_cursor"]
+            if listing_mode == "hot":
+                new_cursor = None
             conn.execute("""
                 UPDATE sources
                 SET found_count = ?, downloaded_count = ?, approved_count = ?, rejected_count = ?,
