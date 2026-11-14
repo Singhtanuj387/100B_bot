@@ -423,9 +423,22 @@ class AgentDatabase:
 
     # --- Phase 3.5: Dynamic Source Registry Management ---
     def seed_default_sources(self, subreddits: Optional[List[str]] = None) -> None:
-        """Seed default active subreddits into sources table if empty."""
-        default_subs = subreddits or ["funny", "Unexpected", "holdmybeer", "Whatcouldgowrong", "instant_regret", "oddlysatisfying"]
-        default_listings = ["hot", "top_month"]
+        """Seed default active subreddits and multi-window archival streams into sources table if empty."""
+        default_subs = subreddits or [
+            "funny",
+            "Unexpected",
+            "holdmybeer",
+            "Whatcouldgowrong",
+            "instant_regret",
+            "oddlysatisfying",
+            "AnimalsBeingDerps",
+            "ContagiousLaughter",
+            "Catculations",
+            "IdiotsInCars",
+            "therewasanattempt",
+            "MadeMeSmile",
+        ]
+        default_listings = ["hot", "top_week", "top_month", "top_year"]
         now = datetime.now().isoformat()
         with self._get_connection() as conn:
             for sub in default_subs:

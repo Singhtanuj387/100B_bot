@@ -27,6 +27,9 @@ reddit:
   listings:
     - "hot"
     - "top_day"
+    - "top_week"
+    - "top_month"
+    - "top_year"
     - "rising"
   limit_per_sub: 25              # Candidates to pull per listing
   rate_limit_delay: [1.2, 2.5]   # Random jitter delay (seconds) between requests

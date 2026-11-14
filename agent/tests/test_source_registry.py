@@ -19,10 +19,10 @@ class TestSourceRegistry(unittest.TestCase):
         with self.db._get_connection() as conn:
             cur = conn.execute("SELECT * FROM sources WHERE name = 'funny'")
             rows = cur.fetchall()
-            # Expect 2 rows: 'hot' and 'top_month'
-            self.assertEqual(len(rows), 2)
+            # Expect 4 multi-window archival rows: 'hot', 'top_week', 'top_month', 'top_year'
+            self.assertEqual(len(rows), 4)
             modes = {r["listing_mode"] for r in rows}
-            self.assertEqual(modes, {"hot", "top_month"})
+            self.assertEqual(modes, {"hot", "top_week", "top_month", "top_year"})
 
     def test_selection_80_20_split(self):
         self.db.seed_default_sources()
