@@ -82,7 +82,7 @@ def schedule_node(
     """
     approved = list(state.get("approved", []))
     target_date = state.get("target_date", "tomorrow")
-    target_count = int(state.get("target_count", 24))
+    target_count = int(state.get("target_count", 6))
     dry_run = state.get("dry_run", False)
 
     tz_name = config.get("timezone", "UTC")

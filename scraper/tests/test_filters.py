@@ -111,3 +111,130 @@ def test_media_resolution_filter():
     passed, reason = check_media_post_download(15.0, 720, 1280, CONFIG)
     assert passed
 
+
+def test_pre_download_duration_filter_with_valid_duration():
+    cand = VideoCandidate(
+        source="reddit",
+        post_id="p1",
+        post_url="https://reddit.com/p1",
+        title="Funny cat jumping",
+        uploader="user1",
+        score=500,
+        duration=45.0,
+    )
+    passed, reason = check_candidate_pre_download(cand, CONFIG)
+    assert passed
+
+
+def test_pre_download_duration_filter_too_long():
+    cand = VideoCandidate(
+        source="reddit",
+        post_id="p_long",
+        post_url="https://reddit.com/p_long",
+        title="Long interview video",
+        uploader="user1",
+        score=500,
+        duration=120.0,
+    )
+    passed, reason = check_candidate_pre_download(cand, CONFIG)
+    assert not passed
+    assert "duration_too_long" in reason
+    assert "120.0s" in reason
+
+
+def test_pre_download_duration_filter_too_short():
+    cand = VideoCandidate(
+        source="reddit",
+        post_id="p_short",
+        post_url="https://reddit.com/p_short",
+        title="Too short meme",
+        uploader="user1",
+        score=500,
+        duration=3.0,
+    )
+    passed, reason = check_candidate_pre_download(cand, CONFIG)
+    assert not passed
+    assert "duration_too_short" in reason
+    assert "3.0s" in reason
+
+
+def test_pre_download_duration_filter_hard_cap_180s():
+    # Even if max_duration is set to 250s, hard cap 180s must reject it
+    lenient_config = {"filters": {"max_duration_seconds": 250.0, "min_duration_seconds": 5.0}}
+    cand = VideoCandidate(
+        source="reddit",
+        post_id="p_huge",
+        post_url="https://reddit.com/p_huge",
+        title="Way too long clip",
+        uploader="user1",
+        score=500,
+        duration=195.0,
+    )
+    passed, reason = check_candidate_pre_download(cand, lenient_config)
+    assert not passed
+    assert "duration_too_long" in reason
+
+
+def test_pre_download_candidate_without_duration_passes_for_probe():
+    # RSS candidates have duration=None; should pass pre-download to be probed before download
+    cand = VideoCandidate(
+        source="reddit",
+        post_id="p_rss",
+        post_url="https://reddit.com/p_rss",
+        title="Funny cat jumping around the room",
+        uploader="user1",
+        score=500,
+        duration=None,
+    )
+    passed, reason = check_candidate_pre_download(cand, CONFIG)
+    assert passed
+
+
+def test_downloader_remote_probe_fallback():
+    from unittest.mock import patch, MagicMock
+    import tempfile
+    from pathlib import Path
+    from core.downloader import VideoDownloader
+    from core.db import VideoDatabase
+    from core.dedupe import Deduplicator
+
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        db = VideoDatabase(str(Path(tmp_dir) / "v.db"))
+        dedup = Deduplicator(db)
+        downloader = VideoDownloader(db, dedup, config={"filters": {"min_duration_seconds": 5.0, "max_duration_seconds": 90.0}})
+
+        # 1. Candidate with unknown duration probed as 120s -> dropped before downloading
+        cand_long = VideoCandidate(
+            source="reddit",
+            post_id="probe_long",
+            post_url="https://reddit.com/r/funny/comments/abc/long",
+            title="Probed Long Video",
+            uploader="u1",
+            duration=None,
+        )
+        dest_long = Path(tmp_dir) / "probe_long"
+        with patch("core.downloader.probe_remote_duration", return_value=120.0):
+            success, msg, meta = downloader.process_candidate(cand_long, dest_long)
+            assert not success
+            assert "duration_too_long" in msg
+            assert "(probed)" in msg
+            assert not dest_long.exists()
+
+        # 2. Candidate with unknown duration probed as 2.0s -> dropped as too short
+        cand_short = VideoCandidate(
+            source="reddit",
+            post_id="probe_short",
+            post_url="https://reddit.com/r/funny/comments/def/short",
+            title="Probed Short Video",
+            uploader="u2",
+            duration=None,
+        )
+        dest_short = Path(tmp_dir) / "probe_short"
+        with patch("core.downloader.probe_remote_duration", return_value=2.0):
+            success, msg, meta = downloader.process_candidate(cand_short, dest_short)
+            assert not success
+            assert "duration_too_short" in msg
+            assert "(probed)" in msg
+            assert not dest_short.exists()
+
+

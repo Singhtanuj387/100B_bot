@@ -20,10 +20,14 @@ def decide_node(
     db: AgentDatabase,
 ) -> Dict[str, Any]:
     """
-    Combines LLM score with engagement metrics to make routing decisions:
-      - Auto-approve: >= 8.0
-      - Auto-reject: < 5.0 or safety/watermark failure
-      - Borderline: 5.0 - 7.9 -> Human review
+    Phase 3.6 Rank-Based Selection:
+      - Filters hard safety gates (judge_failed, unsafe for ads, watermarks, non-English dialogue).
+      - Computes hybrid score for every judged candidate.
+      - Breaks ties by engagement score, then by recency (created_utc).
+      - Auto-approves the top N (target_count) as long as score >= min_publish_score (default 6.5).
+      - Routes clips with score from 5.0 to lowest chosen score to borderline pool.
+      - Rejects clips below 5.0.
+      - When fewer than target good clips meet the bar, schedules available clips without silently lowering quality.
     """
     candidates = state.get("candidates", [])
     approved = list(state.get("approved", []))
@@ -31,14 +35,17 @@ def decide_node(
     rejected = list(state.get("rejected", []))
     judge_failed = list(state.get("judge_failed", []))
     target_date = state.get("target_date", "today")
+    target_count = int(state.get("target_count", 6))
 
     scoring_cfg = config.get("scoring", {})
     llm_weight = float(scoring_cfg.get("llm_weight", 0.70))
     eng_weight = float(scoring_cfg.get("engagement_weight", 0.30))
-    auto_approve_thresh = float(scoring_cfg.get("auto_approve_threshold", 8.0))
+    min_publish_score = float(scoring_cfg.get("min_publish_score", scoring_cfg.get("auto_approve_threshold", 6.5)))
     auto_reject_thresh = float(scoring_cfg.get("auto_reject_threshold", 5.0))
 
-    logger.info(f"--- [Node: DECIDE] Routing {len(candidates)} evaluated candidates ---")
+    logger.info(f"--- [Node: DECIDE] Rank-based routing for {len(candidates)} candidates (Target: {target_count}, Min Score: {min_publish_score}) ---")
+
+    valid_candidates: List[Dict[str, Any]] = []
 
     for cand in candidates:
         post_id = cand.get("post_id", "unknown")
@@ -68,7 +75,7 @@ def decide_node(
         llm_score = float(cand.get("llm_score", 5.0))
         judge_reason = cand.get("judge_reason", "")
 
-        # 1. Hard safety and quality gates
+        # 1. Hard safety and quality gates (NEVER approved, whatever their score)
         if cand.get("is_broadcast_or_movie", False):
             reason = f"High copyright strike risk (TV/movie broadcast): {judge_reason}"
             logger.info(f"Rejected {post_id}: {reason}")
@@ -98,33 +105,77 @@ def decide_node(
             continue
 
         # 2. Hybrid scoring
-        raw_eng = cand.get("score", 500)
+        raw_eng = int(cand.get("score", 500))
         norm_eng = normalize_engagement(raw_eng)
         hybrid_score = round((llm_weight * llm_score) + (eng_weight * norm_eng), 2)
         cand["score"] = hybrid_score
+        cand["raw_engagement"] = raw_eng
         cand["reason"] = judge_reason
+        cand["created_utc"] = float(cand.get("created_utc", 0.0))
 
-        # 3. Threshold routing
-        if hybrid_score >= auto_approve_thresh:
+        valid_candidates.append(cand)
+
+    # 3. Rank valid candidates: sort descending by score, tie-break by engagement, then recency
+    valid_candidates.sort(
+        key=lambda c: (
+            float(c.get("score", 0.0)),
+            int(c.get("raw_engagement", 0)),
+            float(c.get("created_utc", 0.0)),
+        ),
+        reverse=True,
+    )
+
+    slots_needed = max(0, target_count - len(approved))
+    newly_approved: List[Dict[str, Any]] = []
+    chosen_scores: List[float] = []
+
+    # 4. Auto-approve top N as long as score >= min_publish_score
+    for cand in valid_candidates:
+        post_id = cand.get("post_id", "unknown")
+        file_hash = cand.get("file_hash", "")
+        h_score = float(cand.get("score", 0.0))
+
+        if len(newly_approved) < slots_needed and h_score >= min_publish_score:
             cand["status"] = "auto_approved"
-            approved.append(cand)
-            logger.success(f"Auto-approved {post_id} (Score: {hybrid_score:.1f})")
-            db.record_decision(post_id, file_hash, hybrid_score, "auto_approved", judge_reason, target_date)
+            newly_approved.append(cand)
+            chosen_scores.append(h_score)
+            logger.success(f"Auto-approved top clip {post_id} (Rank #{len(approved) + len(newly_approved)}, Score: {h_score:.2f})")
+            db.record_decision(post_id, file_hash, h_score, "auto_approved", cand.get("reason", ""), target_date)
 
-        elif hybrid_score < auto_reject_thresh:
-            reason = f"Score too low ({hybrid_score:.1f} < {auto_reject_thresh}): {judge_reason}"
-            logger.info(f"Auto-rejected {post_id}: {reason}")
-            rejected.append({"post_id": post_id, "title": cand.get("title"), "reason": reason})
-            db.record_decision(post_id, file_hash, hybrid_score, "auto_rejected", reason, target_date)
+    approved.extend(newly_approved)
 
-        else:
+    # 5. Route remaining candidates: [5.0, lowest_chosen_score) -> Borderline, < 5.0 -> Rejected
+    lowest_chosen_score = min(chosen_scores) if chosen_scores else min_publish_score
+
+    for cand in valid_candidates:
+        if cand in newly_approved:
+            continue
+
+        post_id = cand.get("post_id", "unknown")
+        file_hash = cand.get("file_hash", "")
+        h_score = float(cand.get("score", 0.0))
+        reason = cand.get("reason", "")
+
+        if h_score >= auto_reject_thresh:
             cand["status"] = "borderline"
             borderline.append(cand)
-            logger.info(f"Borderline {post_id} (Score: {hybrid_score:.1f}) -> Human Review")
-            db.record_decision(post_id, file_hash, hybrid_score, "borderline", judge_reason, target_date)
+            logger.info(f"Borderline {post_id} (Score: {h_score:.2f} < lowest chosen {lowest_chosen_score:.2f}) -> Borderline Pool")
+            db.record_decision(post_id, file_hash, h_score, "borderline", reason, target_date)
+        else:
+            rej_reason = f"Score too low ({h_score:.2f} < {auto_reject_thresh}): {reason}"
+            cand["status"] = "auto_rejected"
+            rejected.append({"post_id": post_id, "title": cand.get("title"), "reason": rej_reason})
+            logger.info(f"Auto-rejected {post_id}: {rej_reason}")
+            db.record_decision(post_id, file_hash, h_score, "auto_rejected", rej_reason, target_date)
+
+    if len(approved) < target_count:
+        logger.warning(
+            f"Fewer than {target_count} good clips met quality threshold ({len(approved)}/{target_count} >= {min_publish_score}). "
+            "Scheduling available clips without lowering quality bar silently."
+        )
 
     logger.info(
-        f"Decide complete -> Approved: {len(approved)} | Borderline: {len(borderline)} | "
+        f"Decide complete -> Approved: {len(approved)} (Daily Top) | Borderline: {len(borderline)} | "
         f"Rejected: {len(rejected)} | Judge Failed (Pending Retry): {len(judge_failed)}"
     )
 

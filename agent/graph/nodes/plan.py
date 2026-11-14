@@ -19,9 +19,9 @@ def plan_node(
       - Loop 2+ adapts by selecting next best sources from registry without extra discovery calls.
     """
     loop_count = state.get("loop_count", 0) + 1
-    target_count = state.get("target_count", 24)
-    cfg_buffer = state.get("spare_buffer", 4)
-    buffer = min(cfg_buffer, target_count // 4) if target_count >= 4 else 0
+    target_count = state.get("target_count", 6)
+    cfg_buffer = state.get("spare_buffer", 2)
+    buffer = min(cfg_buffer, target_count // 2) if target_count >= 2 else 0
     target_needed = max(1, (target_count + buffer) - len(state.get("approved", [])) - len(state.get("borderline", [])))
 
     allowed_sources = config.get("allowed_sources", {})
@@ -71,6 +71,34 @@ def plan_node(
             "loop_count": loop_count,
             "trigger_extra_loop": False,
         }
+
+    # Loops 2 and 3: Move to deeper pages and alternative archival time windows before asking for new sources
+    if loop_count in (2, 3) and db and hasattr(db, "get_deeper_archive_sources"):
+        deeper_sources = db.get_deeper_archive_sources(loop_count=loop_count, limit=6)
+        if deeper_sources:
+            deeper_subs = [s["name"] for s in deeper_sources if s.get("source_type") == "subreddit"]
+            source_labels = [f"{s.get('name')}/{s.get('listing_mode')}" for s in deeper_sources]
+            logger.info(
+                f"[Node: PLAN] Loop #{loop_count}: Pivoting to deeper pagination & archival windows ({source_labels})"
+            )
+            plan = {
+                "subreddits": deeper_subs,
+                "twitter_accounts": [],
+                "strategy_reason": f"Deeper pagination pages & archival time windows (Loop #{loop_count}) for active sources.",
+                "target_to_fetch": target_needed * 2,
+                "proposed_new_sources": [],
+            }
+            for s in deeper_subs:
+                if s not in sources_tried:
+                    sources_tried.append(s)
+
+            return {
+                "plan": plan,
+                "selected_sources": deeper_sources,
+                "sources_tried": sources_tried,
+                "loop_count": loop_count,
+                "trigger_extra_loop": False,
+            }
 
     # Loop 2+: LLM-guided adaptation
     # Aggregate rejection reasons

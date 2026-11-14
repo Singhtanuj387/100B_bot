@@ -26,23 +26,49 @@ def human_review_node(state: CurationState, db: AgentDatabase) -> Dict[str, Any]
             "rejected": rejected,
         }
 
-    # Handle unattended / non-interactive execution (--no-review or background cron)
-    no_review = state.get("no_review", False) or not sys_stdin_is_interactive()
-    if no_review:
-        policy = state.get("borderline_policy", "dry_run_split" if dry_run else "reject")
-        logger.info(
-            f"[Unattended Mode --no-review] Resolving {len(borderline)} borderline candidate(s) via policy: '{policy}'"
-        )
-        new_approved = []
+    # Check borderline policy: reject, approve_top, review
+    # Default: review when interactive, approve_top when --no-review is used
+    interactive = sys_stdin_is_interactive() and not state.get("no_review", False)
+    policy = state.get("borderline_policy") or ("review" if interactive else "approve_top")
+    target_count = int(state.get("target_count", 6))
+    min_publish_score = float(state.get("min_publish_score", 6.5))
+
+    logger.info(f"Borderline handling: {len(borderline)} clips | Policy: '{policy}' | Interactive: {interactive}")
+
+    if policy == "reject":
+        logger.info(f"Policy 'reject': Dropping all {len(borderline)} borderline candidates.")
         new_rejected = []
         for b in borderline:
-            score = float(b.get("score", 0))
-            is_approved = (
-                (policy == "dry_run_split" and score >= 6.5) or
-                (policy == "approve_top" and score >= 7.0)
+            b["human_decision"] = "rejected"
+            new_rejected.append(b)
+            db.record_decision(
+                b.get("post_id", "unknown"),
+                b.get("file_hash", ""),
+                float(b.get("score", 0.0)),
+                "policy_rejected",
+                "Dropped by borderline policy 'reject'",
+                target_date,
             )
-            if is_approved:
+        return {
+            "borderline": [],
+            "approved": approved,
+            "rejected": rejected + new_rejected,
+            "human_interrupted": False,
+        }
+
+    if policy == "approve_top" or not interactive:
+        # Fill remaining slots from the best borderline clips (still at or above min_publish_score)
+        slots_remaining = max(0, target_count - len(approved))
+        sorted_borderline = sorted(borderline, key=lambda x: float(x.get("score", 0.0)), reverse=True)
+
+        new_approved = []
+        new_rejected = []
+
+        for b in sorted_borderline:
+            score = float(b.get("score", 0.0))
+            if len(new_approved) < slots_remaining and score >= min_publish_score:
                 b["human_decision"] = "approved"
+                b["status"] = "borderline_approved"
                 b["caption_edited_by_human"] = False
                 new_approved.append(b)
                 db.record_decision(
@@ -50,7 +76,7 @@ def human_review_node(state: CurationState, db: AgentDatabase) -> Dict[str, Any]
                     b.get("file_hash", ""),
                     score,
                     "unattended_approved",
-                    "Auto-promoted borderline candidate in unattended mode",
+                    f"Filled slot via borderline policy 'approve_top' (score {score:.2f} >= {min_publish_score})",
                     target_date,
                 )
             else:
@@ -61,10 +87,14 @@ def human_review_node(state: CurationState, db: AgentDatabase) -> Dict[str, Any]
                     b.get("file_hash", ""),
                     score,
                     "unattended_rejected",
-                    "Auto-rejected borderline candidate in unattended mode",
+                    f"Borderline not selected under 'approve_top' (score {score:.2f})",
                     target_date,
                 )
 
+        logger.info(
+            f"Policy 'approve_top': Promoted {len(new_approved)} clip(s) to approved (Score >= {min_publish_score}); "
+            f"rejected {len(new_rejected)} clip(s)."
+        )
         return {
             "borderline": [],
             "approved": approved + new_approved,
@@ -72,7 +102,7 @@ def human_review_node(state: CurationState, db: AgentDatabase) -> Dict[str, Any]
             "human_interrupted": False,
         }
 
-    # Interrupt graph execution and yield payload to external caller
+    # Policy 'review' (interactive mode): Interrupt graph execution and yield payload to external caller
     review_outcome = interrupt({
         "borderline": borderline,
         "auto_approved": approved,

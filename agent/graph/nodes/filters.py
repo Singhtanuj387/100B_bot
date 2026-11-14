@@ -116,8 +116,8 @@ def cheap_filters_node(state: CurationState, config: Dict[str, Any]) -> Dict[str
     surviving: List[Dict[str, Any]] = []
 
     filters_cfg = config.get("filters", {})
-    min_dur = float(filters_cfg.get("min_duration", 5.0))
-    max_dur = float(filters_cfg.get("max_duration", 60.0))
+    min_dur = float(filters_cfg.get("min_duration_seconds", filters_cfg.get("min_duration", 5.0)))
+    max_dur = float(filters_cfg.get("max_duration_seconds", filters_cfg.get("max_duration", 90.0)))
     min_res = int(filters_cfg.get("min_resolution_height", 480))
     blocked_words = [w.lower() for w in filters_cfg.get("blocked_words", [])]
     whisper_cfg = filters_cfg.get("whisper", {})
@@ -155,9 +155,13 @@ def cheap_filters_node(state: CurationState, config: Dict[str, Any]) -> Dict[str
             rejected.append({"post_id": post_id, "title": title, "reason": f"Blocked word: {matched_bad_word}"})
             continue
 
-        # 2. Duration check
+        # 2. Duration check (hard ceiling 180s for Shorts)
         dur = cand.get("duration")
         if dur is not None:
+            if dur > 180.0:
+                logger.info(f"Rejected {post_id}: Duration {dur:.1f}s exceeds 180s Shorts limit")
+                rejected.append({"post_id": post_id, "title": title, "reason": f"Duration {dur:.1f}s exceeds 180s limit"})
+                continue
             if dur < min_dur or dur > max_dur:
                 logger.info(f"Rejected {post_id}: Duration {dur:.1f}s outside [{min_dur}, {max_dur}]")
                 rejected.append({"post_id": post_id, "title": title, "reason": f"Duration {dur:.1f}s out of bounds"})

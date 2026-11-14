@@ -50,6 +50,45 @@ def probe_media_file(filepath: Path) -> Dict[str, Any]:
         return {"duration": 0.0, "width": 0, "height": 0, "has_audio": False}
 
 
+def probe_remote_duration(stream_url: str, timeout: int = 10) -> Optional[float]:
+    """
+    Quick ffprobe probe on remote stream URL / playlist to determine duration
+    before performing a full media download.
+    """
+    if not stream_url:
+        return None
+
+    clean_src = stream_url.replace("file:///", "").replace("file://", "")
+    if os.path.isfile(clean_src):
+        probe = probe_media_file(Path(clean_src))
+        dur = probe.get("duration", 0.0)
+        return dur if dur > 0 else None
+
+    # For Reddit videos, probe HLS playlist directly if v.redd.it
+    probe_url = stream_url
+    if "v.redd.it" in stream_url and not stream_url.endswith((".m3u8", ".mpd", ".mp4")):
+        base_v = stream_url.split("?")[0].rstrip("/")
+        probe_url = f"{base_v}/HLSPlaylist.m3u8"
+
+    cmd = [
+        "ffprobe", "-v", "error",
+        "-show_entries", "format=duration",
+        "-of", "default=noprint_wrappers=1:nokey=1",
+        probe_url
+    ]
+    try:
+        res = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+        if res.returncode == 0 and res.stdout.strip():
+            first_line = res.stdout.strip().split("\n")[0]
+            val = float(first_line)
+            if val > 0:
+                return val
+    except Exception as e:
+        logger.debug(f"ffprobe remote duration probe failed for {probe_url}: {e}")
+
+    return None
+
+
 def resolve_cookies_file(source: str, config: Dict[str, Any]) -> Optional[str]:
     """Find a valid cookies file path from config, env vars, or standard locations."""
     # 1. Source-specific config (reddit.cookies_file or twitter.cookies_file)
@@ -249,6 +288,49 @@ class VideoDownloader:
         final_video_file = dest_folder / "video.mp4"
         caption_file = dest_folder / "caption.txt"
         meta_file = dest_folder / "meta.json"
+
+        # 0. Duration check before full download (probe remote stream if duration is unknown/None)
+        filter_cfg = self.config.get("filters", {})
+        min_dur = float(filter_cfg.get("min_duration_seconds", filter_cfg.get("min_duration", 5.0)))
+        max_dur = float(filter_cfg.get("max_duration_seconds", filter_cfg.get("max_duration", 90.0)))
+
+        raw_dur = getattr(candidate, "duration", None)
+        dur_to_check: Optional[float] = None
+        if raw_dur is not None:
+            try:
+                # Handle int, float or string durations, ignoring MagicMock / uncastable objects in unit tests
+                dur_to_check = float(raw_dur)
+            except (ValueError, TypeError):
+                dur_to_check = None
+
+        was_probed = False
+        if dur_to_check is None:
+            # RSS or stream without duration in listing metadata: probe stream URL before downloading full file
+            probe_target = candidate.video_url or candidate.post_url
+            if getattr(candidate, "extra", None) and isinstance(candidate.extra, dict) and candidate.extra.get("fallback_url"):
+                probe_target = candidate.extra.get("fallback_url")
+            probed_dur = probe_remote_duration(probe_target)
+            if probed_dur is not None:
+                candidate.duration = probed_dur
+                dur_to_check = probed_dur
+                was_probed = True
+
+        if dur_to_check is not None:
+            if dur_to_check > 180.0 or dur_to_check > max_dur or dur_to_check < min_dur:
+                shutil.rmtree(dest_folder, ignore_errors=True)
+                reason_code = "duration_too_short" if dur_to_check < min_dur else "duration_too_long"
+                drop_msg = f"{reason_code} ({dur_to_check:.1f}s)" + (" (probed)" if was_probed else "")
+                logger.info(f"Dropped before download: [{candidate.source}] '{candidate.title[:40]}' - {drop_msg}")
+                self.db.record_seen(
+                    post_id=candidate.post_id,
+                    source=candidate.source,
+                    post_url=candidate.post_url,
+                    title=candidate.title,
+                    uploader=candidate.uploader,
+                    status="filtered",
+                    filter_reason=drop_msg,
+                )
+                return False, f"Dropped before download: {drop_msg}", None
 
         # 1. Download media to temp file
         cookies = resolve_cookies_file(candidate.source, self.config)

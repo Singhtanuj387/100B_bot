@@ -117,9 +117,9 @@ def build_curation_graph(
     def route_after_decide(state: CurationState) -> Literal["plan", "human_review", "backfill"]:
         loop_count = state.get("loop_count", 1)
         max_loops = state.get("max_loops", config.get("max_loops", 3))
-        target_count = state.get("target_count", 24)
-        cfg_buffer = state.get("spare_buffer", 4)
-        buffer = min(cfg_buffer, target_count // 4) if target_count >= 4 else 0
+        target_count = state.get("target_count", 6)
+        cfg_buffer = state.get("spare_buffer", 2)
+        buffer = min(cfg_buffer, target_count // 2) if target_count >= 2 else 0
         goal = target_count + buffer
 
         total_acquired = len(state.get("approved", [])) + len(state.get("borderline", []))

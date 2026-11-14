@@ -242,6 +242,10 @@ def main():
             "media_duplicates": 0,
             "downloaded_by_source": {},
             "failed_by_source": {},
+            "dropped_too_long": 0,
+            "dropped_too_short": 0,
+            "dropped_unknown_probed": 0,
+            "dropped_by_source": {},
         }
         for c in candidates_to_download:
             stats["downloaded_by_source"].setdefault(c.source, 0)
@@ -279,6 +283,17 @@ def main():
                             stats["media_duplicates"] += 1
                         else:
                             stats["failed_by_source"][cand.source] += 1
+                        if "Dropped before download" in msg or "Remote probe dropped" in msg:
+                            src_drop = stats["dropped_by_source"].setdefault(cand.source, {"too_long": 0, "too_short": 0, "unknown_probed": 0})
+                            if "(probed)" in msg:
+                                stats["dropped_unknown_probed"] += 1
+                                src_drop["unknown_probed"] += 1
+                            if "duration_too_long" in msg:
+                                stats["dropped_too_long"] += 1
+                                src_drop["too_long"] += 1
+                            elif "duration_too_short" in msg:
+                                stats["dropped_too_short"] += 1
+                                src_drop["too_short"] += 1
                         logger.warning(f"Skipped candidate [{cand.source}] '{cand.title[:40]}': {msg}")
                 except Exception as exc:
                     stats["failed_by_source"][cand.source] += 1
@@ -313,6 +328,10 @@ def main():
         "media_duplicates": 0,
         "downloaded_by_source": {s.name: 0 for s in active_sources},
         "failed_by_source": {s.name: 0 for s in active_sources},
+        "dropped_too_long": 0,
+        "dropped_too_short": 0,
+        "dropped_unknown_probed": 0,
+        "dropped_by_source": {s.name: {"too_long": 0, "too_short": 0, "unknown_probed": 0} for s in active_sources},
     }
 
     # 1. Fetch Candidates from all sources
@@ -341,6 +360,14 @@ def main():
         passed, reason = check_candidate_pre_download(cand, config)
         if not passed:
             stats["filtered"][reason] = stats["filtered"].get(reason, 0) + 1
+            src_drop = stats["dropped_by_source"].setdefault(cand.source, {"too_long": 0, "too_short": 0, "unknown_probed": 0})
+            if "duration_too_long" in reason:
+                stats["dropped_too_long"] += 1
+                src_drop["too_long"] += 1
+            elif "duration_too_short" in reason:
+                stats["dropped_too_short"] += 1
+                src_drop["too_short"] += 1
+
             db.record_seen(
                 post_id=cand.post_id,
                 source=cand.source,
@@ -414,6 +441,17 @@ def main():
                         stats["media_duplicates"] += 1
                     else:
                         stats["failed_by_source"][cand.source] += 1
+                    if "Dropped before download" in msg or "Remote probe dropped" in msg:
+                        src_drop = stats["dropped_by_source"].setdefault(cand.source, {"too_long": 0, "too_short": 0, "unknown_probed": 0})
+                        if "(probed)" in msg:
+                            stats["dropped_unknown_probed"] += 1
+                            src_drop["unknown_probed"] += 1
+                        if "duration_too_long" in msg:
+                            stats["dropped_too_long"] += 1
+                            src_drop["too_long"] += 1
+                        elif "duration_too_short" in msg:
+                            stats["dropped_too_short"] += 1
+                            src_drop["too_short"] += 1
                     logger.warning(f"Skipped candidate [{cand.source}] '{cand.title[:40]}': {msg}")
             except Exception as exc:
                 stats["failed_by_source"][cand.source] += 1
@@ -439,9 +477,23 @@ def _print_summary(stats: Dict[str, Any], target: int, dry_run: bool, output_dir
     for src, count in stats["found_by_source"].items():
         print(f"    - {src.capitalize():<12}           : {count}")
 
+    too_long = stats.get("dropped_too_long", 0)
+    too_short = stats.get("dropped_too_short", 0)
+    unknown_probed = stats.get("dropped_unknown_probed", 0)
+    drop_summary_line = f"dropped before download: {too_long} too long, {too_short} too short, {unknown_probed} unknown duration (probed)"
+
     print(f"\n  Pre-Download Filtered Out : {total_filtered}")
+    print(f"  {drop_summary_line}")
+    logger.info(drop_summary_line)
     for reason, count in stats["filtered"].items():
         print(f"    - {reason:<22}  : {count}")
+    
+    dropped_by_src = stats.get("dropped_by_source", {})
+    if any(sum(d.values()) > 0 for d in dropped_by_src.values()):
+        print(f"\n  Dropped Duration Counts Per Source:")
+        for src, counts in dropped_by_src.items():
+            if sum(counts.values()) > 0:
+                print(f"    - {src.capitalize():<12} : {counts['too_long']} too long, {counts['too_short']} too short, {counts['unknown_probed']} probed")
 
     print(f"\n  Duplicates Blocked        :")
     print(f"    - ID / URL Duplicates   : {stats['id_duplicates']}")

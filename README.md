@@ -135,6 +135,88 @@ encoding:
 
 ---
 
+## 🤖 Phase 3.6: Automated Video Curation Agent & Smarter Supply
+
+The repository includes a LangGraph-orchestrated daily curation pipeline with automated discovery, two-step ingestion, Vision LLM evaluation, and rank-based daily scheduling:
+
+```
+                  ┌──────────────────────┐
+                  │ Loop 1: Discovery    │
+                  └──────────┬───────────┘
+                             ▼
+┌──────────────┐  Loop 2/3   ┌──────────────────────┐
+│ Adaptive     │◄────────────┤ Source Registry      │
+│ Deeper Pages │             │ (80/20 Bandit)       │
+└──────────────┘             └──────────┬───────────┘
+                                        ▼
+                             ┌──────────────────────┐
+                             │ Pre-Download Filter  │ 5s-90s Duration Filter & Remote ffprobe
+                             └──────────┬───────────┘
+                                        ▼
+                             ┌──────────────────────┐
+                             │ Title Pre-Screen     │ Zero-Cost Fast LLM
+                             └──────────┬───────────┘
+                                        ▼
+                             ┌──────────────────────┐
+                             │ Parallel Downloader  │ Deduplication & Perceptual Hash
+                             └──────────┬───────────┘
+                                        ▼
+                             ┌──────────────────────┐
+                             │ Vision LLM Judge     │ Gemma / Gemini Vision
+                             └──────────┬───────────┘
+                                        ▼
+                             ┌──────────────────────┐
+                             │ Rank-Based Decide    │ Daily Top-6 (Score >= 6.5)
+                             └──────────┬───────────┘
+                                        ▼
+                             ┌──────────────────────┐
+                             │ Borderline Policy    │ approve_top / review / reject
+                             └──────────┬───────────┘
+                                        ▼
+                             ┌──────────────────────┐
+                             │ 6 Peak Hourly Slots  │ 12:00, 14:00, 17:00, 19:00, 20:00, 21:00
+                             └──────────────────────┘
+```
+
+### Key Capabilities in Phase 3.6:
+1. **Duration Filtering Prior to Download**:
+   - `min_duration_seconds: 5.0` and `max_duration_seconds: 90.0` defined in `scraper/config.yaml` as single source of truth and synced by the agent.
+   - Known Reddit video durations from JSON/PRAW metadata are filtered in `--list-only` mode before downloading bytes.
+   - Unknown durations (e.g. RSS feeds) are probed via lightweight stream URL `ffprobe` inspection prior to full file download.
+   - Hard ceiling: Any clip over 180 seconds is rejected unconditionally (YouTube Shorts limit).
+2. **`after` Cursor Pagination**:
+   - For `top_week`, `top_month`, `top_year`, `top_all` and search queries, queries fetch `limit=100` and pass `after=<cursor>`.
+   - The cursor is automatically stored in the `sources` registry table and resumed across runs.
+   - `hot` listings never use a cursor (they start from the top).
+   - If a source yields 3 consecutive empty pages, it is marked `exhausted` and automatically reset after 7 days.
+3. **Daily Top-6 Selection by Rank**:
+   - Daily target defaults to **6 videos** (matching channel daily upload quotas).
+   - Evaluated clips are ranked by composite hybrid score (LLM humor + normalized engagement). Rank ties are broken by raw engagement, then recency (`created_utc`).
+   - Top 6 meeting `min_publish_score: 6.5` are auto-approved.
+   - Clips between 5.0 and the lowest chosen score enter the borderline pool.
+   - `--borderline-policy`:
+     - `approve_top`: Fills remaining slots from best borderline clips meeting `min_publish_score: 6.5`. (Default for unattended `--no-review` runs).
+     - `review`: Sends borderline candidates to interactive review. (Default for interactive runs).
+     - `reject`: Drops all borderline candidates.
+   - Safety exclusions (watermarks, ads-unsafe, copyrighted broadcasts, non-English) are permanently rejected regardless of score.
+   - When fewer than 6 good clips exist, empty slots are logged and scheduled without lowering the quality bar.
+4. **Peak Hours Scheduling**:
+   - 6 daily slots are scheduled across channel peak engagement hours: **12:00, 14:00, 17:00, 19:00, 20:00, 21:00** EST.
+
+### Curation CLI Usage:
+```bash
+# Production daily curation run (Target: 6 slots, unattended auto-approval)
+python agent/curate.py --target 6 --date tomorrow --no-review
+
+# Simulation mode (No API charges, mock evaluation)
+python agent/curate.py --target 6 --date tomorrow --dry-run
+
+# Custom borderline policy
+python agent/curate.py --target 6 --date tomorrow --no-review --borderline-policy approve_top
+```
+
+---
+
 ## 🖥 Windows Drag & Drop Helper
 
 Double-click or drag-and-drop any video onto [`run.bat`](file:///c:/Drive-D/python%20tut/100B/run.bat) to launch the editor directly in Windows File Explorer.

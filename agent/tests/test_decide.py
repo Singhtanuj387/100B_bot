@@ -15,6 +15,7 @@ def sample_config():
         "scoring": {
             "llm_weight": 0.70,
             "engagement_weight": 0.30,
+            "min_publish_score": 8.0,
             "auto_approve_threshold": 8.0,
             "auto_reject_threshold": 5.0,
             "human_review_min": 5.0,
@@ -136,4 +137,197 @@ def test_decide_reject_watermark_and_safety(sample_config, mock_db):
     assert len(result["approved"]) == 0
     assert len(result["borderline"]) == 0
     assert len(result["rejected"]) == 2
+
+
+def test_decide_rank_based_top_6_selection(mock_db):
+    """Test rank-based daily top-6 auto-approval and borderline routing."""
+    config = {
+        "scoring": {
+            "llm_weight": 0.70,
+            "engagement_weight": 0.30,
+            "min_publish_score": 6.5,
+            "auto_reject_threshold": 5.0,
+        }
+    }
+    # 10 candidates with varying scores
+    candidates = []
+    for i in range(10):
+        candidates.append({
+            "post_id": f"clip_{i+1}",
+            "title": f"Clip {i+1}",
+            "llm_score": 9.5 - (i * 0.5),  # 9.5, 9.0, 8.5, 8.0, 7.5, 7.0, 6.5, 6.0, 5.5, 5.0
+            "score": 1000 - (i * 50),
+            "is_safe_for_ads": True,
+            "has_visible_watermark": False,
+            "is_english_or_no_speech": True,
+            "judge_reason": "Test clip",
+            "created_utc": 1000.0 + i,
+        })
+
+    state = {
+        "candidates": candidates,
+        "approved": [],
+        "borderline": [],
+        "rejected": [],
+        "target_count": 6,
+        "target_date": "2026-11-15",
+    }
+    result = decide_node(state, config, mock_db)
+
+    # Exactly 6 top ranked clips should be auto-approved
+    assert len(result["approved"]) == 6
+    approved_ids = [c["post_id"] for c in result["approved"]]
+    assert approved_ids == ["clip_1", "clip_2", "clip_3", "clip_4", "clip_5", "clip_6"]
+    for c in result["approved"]:
+        assert c["score"] >= 6.5
+
+    # Clips 7, 8, 9, 10 have scores >= 5.0 but lower than lowest chosen score -> Borderline pool
+    assert len(result["borderline"]) == 4
+    borderline_ids = [c["post_id"] for c in result["borderline"]]
+    assert "clip_7" in borderline_ids
+    assert "clip_8" in borderline_ids
+
+
+def test_decide_ties_broken_by_engagement_and_recency(mock_db):
+    """Test that rank ties with equal hybrid scores break by engagement then recency."""
+    config = {
+        "scoring": {
+            "llm_weight": 0.70,
+            "engagement_weight": 0.30,
+            "min_publish_score": 6.5,
+            "auto_reject_threshold": 5.0,
+        }
+    }
+    # Candidate A and B have exact same LLM score and same normalized engagement,
+    # but B has higher raw engagement score
+    cand_a = {
+        "post_id": "cand_a",
+        "title": "Clip A",
+        "llm_score": 8.0,
+        "score": 500,
+        "is_safe_for_ads": True,
+        "has_visible_watermark": False,
+        "is_english_or_no_speech": True,
+        "judge_reason": "Equal score",
+        "created_utc": 100.0,
+    }
+    cand_b = {
+        "post_id": "cand_b",
+        "title": "Clip B",
+        "llm_score": 8.0,
+        "score": 900,  # higher engagement
+        "is_safe_for_ads": True,
+        "has_visible_watermark": False,
+        "is_english_or_no_speech": True,
+        "judge_reason": "Equal score",
+        "created_utc": 100.0,
+    }
+    cand_c = {
+        "post_id": "cand_c",
+        "title": "Clip C",
+        "llm_score": 8.0,
+        "score": 900,
+        "is_safe_for_ads": True,
+        "has_visible_watermark": False,
+        "is_english_or_no_speech": True,
+        "judge_reason": "Equal score",
+        "created_utc": 200.0,  # more recent than B
+    }
+
+    state = {
+        "candidates": [cand_a, cand_b, cand_c],
+        "approved": [],
+        "borderline": [],
+        "rejected": [],
+        "target_count": 2,
+        "target_date": "2026-11-15",
+    }
+    result = decide_node(state, config, mock_db)
+    # Target 2: cand_c (most recent of 900) and cand_b (900) should be approved before cand_a (500)
+    assert len(result["approved"]) == 2
+    approved_ids = [c["post_id"] for c in result["approved"]]
+    assert approved_ids[0] == "cand_c"
+    assert approved_ids[1] == "cand_b"
+    assert result["borderline"][0]["post_id"] == "cand_a"
+
+
+def test_decide_fewer_than_6_candidates_keeps_quality_bar(mock_db):
+    """When fewer than 6 good clips exist, do not lower quality bar silently."""
+    config = {
+        "scoring": {
+            "llm_weight": 0.70,
+            "engagement_weight": 0.30,
+            "min_publish_score": 6.5,
+            "auto_reject_threshold": 5.0,
+        }
+    }
+    candidates = [
+        {"post_id": "g1", "title": "Good 1", "llm_score": 8.5, "score": 1000, "is_safe_for_ads": True, "has_visible_watermark": False, "is_english_or_no_speech": True, "created_utc": 1.0},
+        {"post_id": "g2", "title": "Good 2", "llm_score": 8.0, "score": 800, "is_safe_for_ads": True, "has_visible_watermark": False, "is_english_or_no_speech": True, "created_utc": 2.0},
+        {"post_id": "b1", "title": "Borderline 1", "llm_score": 5.5, "score": 50, "is_safe_for_ads": True, "has_visible_watermark": False, "is_english_or_no_speech": True, "created_utc": 3.0},
+        {"post_id": "r1", "title": "Junk 1", "llm_score": 2.0, "score": 5, "is_safe_for_ads": True, "has_visible_watermark": False, "is_english_or_no_speech": True, "created_utc": 4.0},
+    ]
+    state = {
+        "candidates": candidates,
+        "approved": [],
+        "borderline": [],
+        "rejected": [],
+        "target_count": 6,
+        "target_date": "2026-11-15",
+    }
+    result = decide_node(state, config, mock_db)
+    # Only 2 clips met min_publish_score 6.5; only 2 approved!
+    assert len(result["approved"]) == 2
+    assert {c["post_id"] for c in result["approved"]} == {"g1", "g2"}
+    assert len(result["borderline"]) == 1
+    assert result["borderline"][0]["post_id"] == "b1"
+    assert len(result["rejected"]) == 1
+    assert result["rejected"][0]["post_id"] == "r1"
+
+
+def test_borderline_policy_approve_top_and_reject(mock_db):
+    """Test human_review_node with approve_top and reject policies."""
+    from graph.nodes.review import human_review_node
+
+    borderline_clips = [
+        {"post_id": "b_high", "title": "High Borderline", "score": 7.2},
+        {"post_id": "b_mid", "title": "Mid Borderline", "score": 6.8},
+        {"post_id": "b_low", "title": "Low Borderline", "score": 5.4},
+    ]
+
+    # Test approve_top: target 4, 2 already approved -> fill 2 slots from borderline >= 6.5
+    state_approve_top = {
+        "borderline": borderline_clips,
+        "approved": [{"post_id": "a1"}, {"post_id": "a2"}],
+        "rejected": [],
+        "target_count": 4,
+        "min_publish_score": 6.5,
+        "borderline_policy": "approve_top",
+        "no_review": True,
+        "target_date": "2026-11-15",
+    }
+    res_approve = human_review_node(state_approve_top, mock_db)
+    assert len(res_approve["approved"]) == 4
+    approved_ids = [c["post_id"] for c in res_approve["approved"]]
+    assert "b_high" in approved_ids
+    assert "b_mid" in approved_ids
+    # b_low (score 5.4 < 6.5) must NOT be approved
+    assert "b_low" not in approved_ids
+    assert len(res_approve["rejected"]) == 1
+    assert res_approve["rejected"][0]["post_id"] == "b_low"
+
+    # Test reject policy: all borderline dropped
+    state_reject = {
+        "borderline": borderline_clips,
+        "approved": [{"post_id": "a1"}],
+        "rejected": [],
+        "target_count": 4,
+        "borderline_policy": "reject",
+        "no_review": True,
+        "target_date": "2026-11-15",
+    }
+    res_reject = human_review_node(state_reject, mock_db)
+    assert len(res_reject["approved"]) == 1
+    assert len(res_reject["rejected"]) == 3
+
 

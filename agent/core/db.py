@@ -459,8 +459,16 @@ class AgentDatabase:
         self.seed_default_sources()
         num_active = max(1, int(round(total_budget * active_ratio)))
         num_trial = max(1, total_budget - num_active)
+        now = datetime.now().isoformat()
 
         with self._get_connection() as conn:
+            # Auto-reset exhausted archive sources older than 7 days back to active
+            conn.execute("""
+                UPDATE sources
+                SET status = 'active', consecutive_empty_runs = 0, pagination_cursor = NULL, updated_at = ?
+                WHERE status = 'exhausted' AND (julianday(?) - julianday(updated_at)) >= 7.0
+            """, (now, now))
+
             cur = conn.execute("""
                 SELECT * FROM sources
                 WHERE status = 'active'
@@ -490,6 +498,39 @@ class AgentDatabase:
 
             selected = active_rows + trial_rows
             return selected[:total_budget]
+
+    def get_deeper_archive_sources(self, loop_count: int = 2, limit: int = 6) -> List[Dict[str, Any]]:
+        """
+        Phase 3.6: Fetch deeper pagination pages and alternative time windows
+        (top_month, top_year, top_all) for active sources before requesting new sources.
+        """
+        self.seed_default_sources()
+        target_listings = ["top_month", "top_year"] if loop_count == 2 else ["top_year", "top_all", "top_month"]
+        placeholders = ",".join(["?"] * len(target_listings))
+
+        with self._get_connection() as conn:
+            # First, check active sources in target archive time windows (prioritizing existing cursors)
+            cur = conn.execute(f"""
+                SELECT * FROM sources
+                WHERE status = 'active' AND listing_mode IN ({placeholders})
+                ORDER BY (pagination_cursor IS NOT NULL) DESC, yield_rate DESC, id ASC
+                LIMIT ?
+            """, target_listings + [limit])
+            rows = [dict(r) for r in cur.fetchall()]
+
+            if len(rows) < limit:
+                # Supplement with active sources that have saved cursors
+                existing_ids = [str(r["id"]) for r in rows] or ["0"]
+                id_placeholders = ",".join(existing_ids)
+                cur = conn.execute(f"""
+                    SELECT * FROM sources
+                    WHERE status = 'active' AND id NOT IN ({id_placeholders}) AND listing_mode != 'hot'
+                    ORDER BY (pagination_cursor IS NOT NULL) DESC, yield_rate DESC
+                    LIMIT ?
+                """, (limit - len(rows),))
+                rows.extend([dict(r) for r in cur.fetchall()])
+
+            return rows[:limit]
 
     def add_trial_sources(
         self,

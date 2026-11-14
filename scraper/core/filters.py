@@ -48,12 +48,30 @@ def check_candidate_pre_download(candidate, config: Dict[str, Any]) -> Tuple[boo
     """
     Pre-download filter to discard unwanted candidates early before downloading media.
     Checks:
+      - Duration (if known before download): min_duration_seconds <= dur <= max_duration_seconds (max 180s)
       - NSFW flag
       - Keyword blocklist (politics, gore, tragedy, death)
       - English / universal text
       - Minimum upvotes / likes threshold
     """
     filter_cfg = config.get("filters", {})
+    min_dur = float(filter_cfg.get("min_duration_seconds", filter_cfg.get("min_duration", 5.0)))
+    max_dur = float(filter_cfg.get("max_duration_seconds", filter_cfg.get("max_duration", 90.0)))
+
+    # 0. Pre-download Duration Check (if duration is known from Reddit JSON/PRAW)
+    cand_dur = getattr(candidate, "duration", None)
+    if cand_dur is not None:
+        try:
+            dur_val = float(cand_dur)
+            # YouTube Shorts allow up to 180s (since Oct 2024); reject > 180s always
+            if dur_val > 180.0:
+                return False, f"duration_too_long: Duration too long ({dur_val:.1f}s > 180.0s limit)"
+            if dur_val > max_dur:
+                return False, f"duration_too_long: Duration too long ({dur_val:.1f}s > {max_dur:.1f}s)"
+            if dur_val < min_dur:
+                return False, f"duration_too_short: Duration too short ({dur_val:.1f}s < {min_dur:.1f}s)"
+        except (ValueError, TypeError):
+            pass
 
     # 1. NSFW Check
     if filter_cfg.get("skip_nsfw", True) and getattr(candidate, "is_nsfw", False):
@@ -95,17 +113,19 @@ def check_media_post_download(
 ) -> Tuple[bool, str]:
     """
     Post-download filter:
-      - Duration: 5.0s <= duration <= 60.0s (configurable)
+      - Duration: 5.0s <= duration <= 90.0s (configurable, hard limit 180s)
       - Resolution: height >= 480 or width >= 480
     """
     filter_cfg = config.get("filters", {})
-    min_dur = filter_cfg.get("min_duration", 5.0)
-    max_dur = filter_cfg.get("max_duration", 60.0)
+    min_dur = float(filter_cfg.get("min_duration_seconds", filter_cfg.get("min_duration", 5.0)))
+    max_dur = float(filter_cfg.get("max_duration_seconds", filter_cfg.get("max_duration", 90.0)))
 
+    if duration > 180.0:
+        return False, f"duration_too_long: Duration too long ({duration:.1f}s > 180.0s hard limit)"
     if duration < min_dur:
-        return False, f"Duration too short ({duration:.1f}s < {min_dur}s)"
+        return False, f"duration_too_short: Duration too short ({duration:.1f}s < {min_dur:.1f}s)"
     if duration > max_dur:
-        return False, f"Duration too long ({duration:.1f}s > {max_dur}s)"
+        return False, f"duration_too_long: Duration too long ({duration:.1f}s > {max_dur:.1f}s)"
 
     min_h = filter_cfg.get("min_height", 480)
     min_w = filter_cfg.get("min_width", 480)

@@ -296,6 +296,226 @@ class TestRedditSource(unittest.TestCase):
             self.assertIn("-c", cmd_called)
             self.assertIn("copy", cmd_called)
 
+    def test_pagination_cursor_saved_and_reused_in_top(self):
+        import tempfile
+        import sqlite3
+        from pathlib import Path
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            db_path = Path(tmp_dir) / "agent.db"
+            conn = sqlite3.connect(str(db_path))
+            with conn:
+                conn.execute("""
+                    CREATE TABLE sources (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        source_type TEXT NOT NULL,
+                        name TEXT NOT NULL,
+                        listing_mode TEXT NOT NULL,
+                        status TEXT DEFAULT 'active',
+                        pagination_cursor TEXT DEFAULT NULL,
+                        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                    )
+                """)
+                conn.execute("""
+                    INSERT INTO sources (source_type, name, listing_mode, status, pagination_cursor)
+                    VALUES ('subreddit', 'funny', 'top_week', 'active', 't3_prev123')
+                """)
+            conn.close()
+
+            config = {
+                "reddit": {
+                    "subreddits": ["funny"],
+                    "listings": ["top_week"],
+                    "limit_per_sub": 10,
+                    "max_pages_per_source_per_run": 2,
+                    "rate_limit_delay": [0.0, 0.0],
+                    "custom_sources": [{"type": "subreddit", "name": "funny", "listing": "top_week", "cursor": "t3_prev123"}],
+                },
+                "registry": {"db_path": str(db_path)},
+            }
+            source = RedditSource(config)
+            source.praw_client = None
+
+            # First page mock: returns 1 video and after="t3_next456"
+            resp1 = MagicMock()
+            resp1.status_code = 200
+            resp1.json.return_value = {
+                "data": {
+                    "after": "t3_next456",
+                    "children": [
+                        {
+                            "data": {
+                                "id": "p1",
+                                "name": "t3_p1",
+                                "is_video": True,
+                                "domain": "v.redd.it",
+                                "title": "Top Week Post 1",
+                                "author": "u1",
+                                "score": 1000,
+                                "permalink": "/r/funny/comments/p1/test",
+                                "media": {"reddit_video": {"duration": 20, "fallback_url": "https://v.redd.it/p1/DASH_720.mp4"}},
+                            }
+                        }
+                    ]
+                }
+            }
+
+            # Second page mock: returns 1 video and after="t3_next789"
+            resp2 = MagicMock()
+            resp2.status_code = 200
+            resp2.json.return_value = {
+                "data": {
+                    "after": "t3_next789",
+                    "children": [
+                        {
+                            "data": {
+                                "id": "p2",
+                                "name": "t3_p2",
+                                "is_video": True,
+                                "domain": "v.redd.it",
+                                "title": "Top Week Post 2",
+                                "author": "u2",
+                                "score": 900,
+                                "permalink": "/r/funny/comments/p2/test",
+                                "media": {"reddit_video": {"duration": 25, "fallback_url": "https://v.redd.it/p2/DASH_720.mp4"}},
+                            }
+                        }
+                    ]
+                }
+            }
+
+            source.http.get = MagicMock(side_effect=[resp1, resp2])
+            seen_ids = set()
+            candidates = source._fetch_via_json(target_count=5, seen_ids=seen_ids)
+
+            # Both pages should have been fetched
+            self.assertEqual(len(candidates), 2)
+            self.assertEqual(source.http.get.call_count, 2)
+
+            # First call should have after='t3_prev123'
+            first_call_params = source.http.get.call_args_list[0][1]["params"]
+            self.assertEqual(first_call_params.get("after"), "t3_prev123")
+            self.assertEqual(first_call_params.get("limit"), 100)
+
+            # Second call should have after='t3_next456'
+            second_call_params = source.http.get.call_args_list[1][1]["params"]
+            self.assertEqual(second_call_params.get("after"), "t3_next456")
+
+            # Registry DB should have saved the latest cursor 't3_next789'
+            conn = sqlite3.connect(str(db_path))
+            cur = conn.execute("SELECT pagination_cursor FROM sources WHERE name='funny' AND listing_mode='top_week'")
+            saved_cursor = cur.fetchone()[0]
+            conn.close()
+            self.assertEqual(saved_cursor, "t3_next789")
+
+    def test_pagination_no_cursor_for_hot(self):
+        import tempfile
+        import sqlite3
+        from pathlib import Path
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            db_path = Path(tmp_dir) / "agent.db"
+            conn = sqlite3.connect(str(db_path))
+            with conn:
+                conn.execute("""
+                    CREATE TABLE sources (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        source_type TEXT NOT NULL,
+                        name TEXT NOT NULL,
+                        listing_mode TEXT NOT NULL,
+                        status TEXT DEFAULT 'active',
+                        pagination_cursor TEXT DEFAULT 't3_should_not_be_used',
+                        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                    )
+                """)
+                conn.execute("""
+                    INSERT INTO sources (source_type, name, listing_mode, status, pagination_cursor)
+                    VALUES ('subreddit', 'funny', 'hot', 'active', 't3_should_not_be_used')
+                """)
+            conn.close()
+
+            config = {
+                "reddit": {
+                    "subreddits": ["funny"],
+                    "listings": ["hot"],
+                    "limit_per_sub": 10,
+                    "rate_limit_delay": [0.0, 0.0],
+                    "custom_sources": [{"type": "subreddit", "name": "funny", "listing": "hot", "cursor": "t3_ignore_me"}],
+                },
+                "registry": {"db_path": str(db_path)},
+            }
+            source = RedditSource(config)
+            source.praw_client = None
+
+            resp = MagicMock()
+            resp.status_code = 200
+            resp.json.return_value = {"data": {"children": []}}
+            source.http.get = MagicMock(return_value=resp)
+
+            seen_ids = set()
+            source._fetch_via_json(target_count=2, seen_ids=seen_ids)
+
+            # In hot mode, params must NEVER include 'after'
+            call_params = source.http.get.call_args[1]["params"]
+            self.assertNotIn("after", call_params)
+
+    def test_pagination_exhausted_status_after_3_empty_pages(self):
+        import tempfile
+        import sqlite3
+        from pathlib import Path
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            db_path = Path(tmp_dir) / "agent.db"
+            conn = sqlite3.connect(str(db_path))
+            with conn:
+                conn.execute("""
+                    CREATE TABLE sources (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        source_type TEXT NOT NULL,
+                        name TEXT NOT NULL,
+                        listing_mode TEXT NOT NULL,
+                        status TEXT DEFAULT 'active',
+                        pagination_cursor TEXT DEFAULT NULL,
+                        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                    )
+                """)
+                conn.execute("""
+                    INSERT INTO sources (source_type, name, listing_mode, status)
+                    VALUES ('subreddit', 'funny', 'top_month', 'active')
+                """)
+            conn.close()
+
+            config = {
+                "reddit": {
+                    "subreddits": ["funny"],
+                    "listings": ["top_month"],
+                    "limit_per_sub": 10,
+                    "max_pages_per_source_per_run": 5,
+                    "rate_limit_delay": [0.0, 0.0],
+                    "custom_sources": [{"type": "subreddit", "name": "funny", "listing": "top_month"}],
+                },
+                "registry": {"db_path": str(db_path)},
+            }
+            source = RedditSource(config)
+            source.praw_client = None
+
+            # Empty response with cursor to trigger consecutive empty pages
+            empty_resp = MagicMock()
+            empty_resp.status_code = 200
+            empty_resp.json.return_value = {"data": {"after": "t3_empty_next", "children": []}}
+            source.http.get = MagicMock(return_value=empty_resp)
+
+            seen_ids = set()
+            source._fetch_via_json(target_count=5, seen_ids=seen_ids)
+
+            # After 3 empty pages, it must have broken early and marked source exhausted
+            conn = sqlite3.connect(str(db_path))
+            cur = conn.execute("SELECT status FROM sources WHERE name='funny' AND listing_mode='top_month'")
+            status = cur.fetchone()[0]
+            conn.close()
+            self.assertEqual(status, "exhausted")
+
+
 
 if __name__ == "__main__":
     unittest.main()

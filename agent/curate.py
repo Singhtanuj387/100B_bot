@@ -57,12 +57,32 @@ console = Console()
 
 
 def load_config(config_path: Path) -> dict:
-    """Load agent configuration file."""
+    """Load agent configuration file and sync durations from scraper config (single source of truth)."""
     if not config_path.exists():
         logger.error(f"Config file not found at {config_path}")
         sys.exit(1)
     with open(config_path, "r", encoding="utf-8") as f:
-        return yaml.safe_load(f) or {}
+        cfg = yaml.safe_load(f) or {}
+
+    # Synchronize duration bounds from scraper/config.yaml (single source of truth)
+    scraper_cfg_path = config_path.parent.parent / "scraper" / "config.yaml"
+    if scraper_cfg_path.is_file():
+        try:
+            with open(scraper_cfg_path, "r", encoding="utf-8") as sf:
+                sc_cfg = yaml.safe_load(sf) or {}
+            sc_filters = sc_cfg.get("filters", {})
+            if "min_duration_seconds" in sc_filters:
+                min_sec = float(sc_filters["min_duration_seconds"])
+                cfg.setdefault("filters", {})["min_duration_seconds"] = min_sec
+                cfg["filters"]["min_duration"] = min_sec
+            if "max_duration_seconds" in sc_filters:
+                max_sec = float(sc_filters["max_duration_seconds"])
+                cfg.setdefault("filters", {})["max_duration_seconds"] = max_sec
+                cfg["filters"]["max_duration"] = max_sec
+        except Exception as e:
+            logger.debug(f"Could not sync duration config from scraper: {e}")
+
+    return cfg
 
 
 def resolve_date_arg(date_str: str, timezone_name: str) -> str:
@@ -169,11 +189,16 @@ def main():
         description="Phase 3 Curation Agent — Automated Video Selection & Scheduling",
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    parser.add_argument("--target", type=int, default=24, help="Target number of scheduled videos (default: 24)")
+    parser.add_argument("--target", type=int, default=6, help="Target number of scheduled videos (default: 6)")
     parser.add_argument("--date", type=str, default="tomorrow", help="Target date ('tomorrow' or 'YYYY-MM-DD')")
     parser.add_argument("--dry-run", action="store_true", help="Simulate execution without modifying files or calling paid APIs")
     parser.add_argument("--no-review", action="store_true", help="Unattended mode: auto-resolve borderline clips without interactive terminal prompts")
-    parser.add_argument("--borderline-policy", choices=["reject", "approve_top"], default="reject", help="Policy for borderline clips in unattended mode (default: reject)")
+    parser.add_argument(
+        "--borderline-policy",
+        choices=["reject", "approve_top", "review"],
+        default=None,
+        help="Policy for borderline clips: reject, approve_top, or review (default: review when interactive, approve_top when --no-review)",
+    )
     parser.add_argument("--resume", action="store_true", help="Resume from previous SQLite checkpoint")
     parser.add_argument("--config", type=str, default="config.yaml", help="Path to config.yaml")
     parser.add_argument("--workers", type=int, default=None, help="Parallel video editing workers")
@@ -244,6 +269,9 @@ def main():
         "recursion_limit": recursion_limit,
     }
 
+    # Resolve borderline policy default: review if interactive, approve_top if --no-review
+    resolved_borderline_policy = args.borderline_policy or ("approve_top" if args.no_review else "review")
+
     # 5. Initialize or Resume State
     if args.resume:
         logger.info(f"Resuming graph execution for thread: {thread_id} (recursion_limit: {recursion_limit})...")
@@ -254,7 +282,7 @@ def main():
             "target_date": target_date,
             "loop_count": 0,
             "max_loops": config.get("max_loops", 3),
-            "spare_buffer": config.get("spare_buffer", 4),
+            "spare_buffer": config.get("spare_buffer", 2),
             "candidates": [],
             "approved": [],
             "borderline": [],
@@ -268,7 +296,7 @@ def main():
             "human_interrupted": False,
             "dry_run": args.dry_run,
             "no_review": args.no_review,
-            "borderline_policy": args.borderline_policy,
+            "borderline_policy": resolved_borderline_policy,
             "discovered": False,
             "selected_sources": [],
             "raw_candidates": [],

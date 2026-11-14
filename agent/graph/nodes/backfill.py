@@ -22,7 +22,7 @@ def backfill_node(state: CurationState, db: AgentDatabase) -> Dict[str, Any]:
 
     dry_run = state.get("dry_run", False)
     approved = list(state.get("approved", []))
-    target_count = state.get("target_count", 24)
+    target_count = state.get("target_count", 6)
 
     # First, verify any already-approved reserve clips in state still exist on disk
     valid_existing_approved = []
