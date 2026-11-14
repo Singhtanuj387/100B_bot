@@ -1,12 +1,14 @@
 import json
+import re
 from pathlib import Path
 from datetime import datetime, time
-from typing import Dict, Any, List
+from typing import Dict, Any, List, Set
 from zoneinfo import ZoneInfo
 from loguru import logger
 
 from graph.state import CurationState
 from core.db import AgentDatabase
+from graph.nodes.caption import is_generic_title
 
 
 def interleave_sources(videos: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
@@ -139,11 +141,15 @@ def schedule_node(
             if not dry_run and (not v_path or not Path(v_path).is_file()):
                 logger.warning(f"Skipping surplus clip '{s.get('post_id')}' with missing file: {v_path}")
                 continue
+            # Ensure saved title in reserve pool is specific and not generic
+            s_title = s.get("youtube_title") or s.get("title")
+            if is_generic_title(s_title):
+                s_title = s.get("title") or s.get("caption") or f"Comedy Clip #{s['post_id']}"
             db.add_to_reserve_pool({
                 "post_id": s["post_id"],
                 "video_path": v_path,
                 "caption": s.get("caption"),
-                "title": s.get("youtube_title") or s.get("title"),
+                "title": s_title,
                 "description": s.get("youtube_description") or s.get("caption"),
                 "uploader": s.get("uploader"),
                 "post_url": s.get("post_url"),
@@ -179,6 +185,7 @@ def schedule_node(
 
     schedule_slots: List[Dict[str, Any]] = []
     empty_slots: List[int] = []
+    seen_titles: Set[str] = set()
 
     # Map target hours in chronological order
     for hour in target_hours:
@@ -189,12 +196,29 @@ def schedule_node(
 
         if hour in slot_assignments:
             chosen_vid, is_peak = slot_assignments[hour]
+            slot_title = chosen_vid.get("youtube_title") or chosen_vid.get("title") or ""
+
+            # Enforce title uniqueness across all slots in this schedule
+            if is_generic_title(slot_title) or slot_title.lower().strip() in seen_titles:
+                alt = chosen_vid.get("title") or chosen_vid.get("caption") or ""
+                clean_alt = re.sub(r"\s*#\w+", "", alt).strip()
+                if clean_alt and not is_generic_title(clean_alt) and f"{clean_alt} #shorts #funny".lower() not in seen_titles:
+                    slot_title = f"{clean_alt} #shorts #funny"
+                else:
+                    base = re.sub(r"\s*#\w+", "", slot_title).strip() or "Comedy Clip"
+                    if is_generic_title(base):
+                        base = f"Hilarious Moment at {hour:02d}:00"
+                    slot_title = f"{base} (Slot {hour:02d}:00) #shorts #funny"
+
+            seen_titles.add(slot_title.lower().strip())
+            chosen_vid["youtube_title"] = slot_title
+
             slot_entry = {
                 "slot_hour": hour,
                 "slot_time": slot_time_iso,
                 "post_id": chosen_vid["post_id"],
                 "video_path": chosen_vid.get("edited_video_path") or chosen_vid.get("video_path"),
-                "title": chosen_vid.get("youtube_title") or chosen_vid.get("title"),
+                "title": slot_title,
                 "description": chosen_vid.get("youtube_description") or "",
                 "caption": chosen_vid.get("caption", ""),
                 "source_url": chosen_vid.get("post_url", ""),

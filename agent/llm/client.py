@@ -534,11 +534,29 @@ class LLMClient:
             )
 
         elif schema == CaptionResult:
-            # Generate short witty mock caption
+            # Generate unique mock caption and title derived from candidate context
+            title_match = re.search(r"Original Post Title:\s*(.+)", user_prompt)
+            raw_title = title_match.group(1).strip() if title_match else ""
+            if not raw_title or raw_title.lower() in ("none", "unknown", ""):
+                raw_title = f"Hilarious Comedy Clip #{self.call_count + 1}"
+
+            # Strip brackets, Reddit tags, and excessive punctuation
+            clean_t = re.sub(r"[\[\(\{].*?[\]\)\}]", "", raw_title).strip()
+            clean_t = re.sub(r"^[Ww][Cc][Gg][Ww]\s*[-:]*\s*", "", clean_t)  # strip WCGW prefix
+            clean_t = re.sub(r"^[Hh][Mm][Bb]\s*[-:]*\s*", "", clean_t)      # strip HMB prefix
+            if not clean_t:
+                clean_t = f"Comedy Moment #{self.call_count + 1}"
+
+            # Formulate unique caption and YouTube title
+            caption_words = clean_t.split()[:7]
+            caption_text = " ".join(caption_words) if caption_words else "Funny moment"
+            if not any(char in caption_text for char in ("😂", "💀", "🤣")):
+                caption_text = f"{caption_text} 😂"
+
             return schema(
-                caption="He really thought he had it 😂",
-                youtube_title="Wait till you see what happens next! 😂 #shorts #funny",
-                youtube_description="Hilarious original clip!\nCredit to original creator.\n\nSubscribe for more laughs daily!",
+                caption=caption_text,
+                youtube_title=f"{clean_t} 😂 #shorts #funny",
+                youtube_description=f"Hilarious original clip credit: {raw_title}\n\nSubscribe for more laughs daily!",
             )
 
         elif schema == PlanResult:

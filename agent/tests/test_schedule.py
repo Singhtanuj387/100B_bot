@@ -182,3 +182,37 @@ def test_schedule_skips_missing_video_in_production(schedule_config, mock_db):
         assert slots[0]["post_id"] == "vid_valid"
 
 
+def test_schedule_deduplicates_titles(schedule_config, mock_db):
+    state = {
+        "target_count": 2,
+        "target_date": "2026-11-15",
+        "dry_run": True,
+        "approved": [
+            {
+                "post_id": "v1",
+                "score": 9.0,
+                "video_path": "mock1.mp4",
+                "title": "Cat falls off sofa",
+                "youtube_title": "Wait till you see what happens next! 😂 #shorts #funny",  # Generic
+            },
+            {
+                "post_id": "v2",
+                "score": 8.0,
+                "video_path": "mock2.mp4",
+                "title": "Dog steals pizza slice",
+                "youtube_title": "Wait till you see what happens next! 😂 #shorts #funny",  # Duplicate generic
+            },
+        ],
+    }
+    res = schedule_node(state, schedule_config, mock_db)
+    slots = res["final_schedule"]
+    assert len(slots) == 2
+    t1 = slots[0]["title"]
+    t2 = slots[1]["title"]
+    # Titles must be strictly unique and not generic
+    assert t1 != t2
+    assert "Wait till you see what happens next" not in t1
+    assert "Wait till you see what happens next" not in t2
+
+
+

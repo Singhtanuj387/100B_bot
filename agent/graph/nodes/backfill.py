@@ -3,6 +3,7 @@ from typing import Dict, Any, List
 from loguru import logger
 from graph.state import CurationState
 from core.db import AgentDatabase
+from graph.nodes.caption import is_generic_title
 
 
 def backfill_node(state: CurationState, db: AgentDatabase) -> Dict[str, Any]:
@@ -91,8 +92,11 @@ def backfill_node(state: CurationState, db: AgentDatabase) -> Dict[str, Any]:
                 r["is_reserve_backfill"] = True
                 r["already_edited"] = True
                 r["edited_video_path"] = r.get("video_path")
-                if "title" in r and not r.get("youtube_title"):
-                    r["youtube_title"] = r["title"]
+                res_title = r.get("title")
+                if is_generic_title(res_title):
+                    r["youtube_title"] = None
+                else:
+                    r["youtube_title"] = res_title
                 if "description" in r and not r.get("youtube_description"):
                     r["youtube_description"] = r["description"]
                 approved.append(r)

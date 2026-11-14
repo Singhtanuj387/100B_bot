@@ -1,6 +1,6 @@
 import re
 from pathlib import Path
-from typing import Dict, Any, List
+from typing import Dict, Any, List, Optional, Set
 from loguru import logger
 
 from graph.state import CurationState
@@ -8,17 +8,41 @@ from llm.client import LLMClient
 from llm.schemas import CaptionResult
 from llm.prompts import build_caption_system_prompt, build_caption_user_prompt
 
+GENERIC_TITLE_PATTERNS = [
+    "wait till you see what happens next",
+    "wait until you see what happens next",
+    "wait till the end",
+    "wait for the end",
+    "funny moment",
+    "he really thought he had it",
+    "you won't believe what happens",
+]
+
+
+def is_generic_title(title: Optional[str]) -> bool:
+    """Check if a title is empty, None, or matches known generic clickbait templates."""
+    if not title or not str(title).strip():
+        return True
+    norm = str(title).lower().strip()
+    # Strip emojis and hashtags for comparison
+    clean = re.sub(r"[#\U0001F000-\U0001FFFF\U00002600-\U000027BF]", "", norm).strip()
+    return any(p in clean for p in GENERIC_TITLE_PATTERNS)
+
 
 def clean_caption_text(caption: str) -> str:
     """Enforce strict caption rules: <= 8 words, max 1 emoji, no hashtags, no URLs."""
+    if not caption:
+        return "Funny moment 😂"
     # Strip URLs
     caption = re.sub(r"https?://\S+", "", caption)
     # Strip hashtags
     caption = re.sub(r"#\w+", "", caption)
     # Strip usernames / mentions
     caption = re.sub(r"@\w+", "", caption)
-    # Strip Reddit tags like [OC], (watch till end)
+    # Strip Reddit tags like [OC], (watch till end), WCGW, HMB
     caption = re.sub(r"\[.*?\]|\(.*?\)", "", caption)
+    caption = re.sub(r"^[Ww][Cc][Gg][Ww]\s*[-:]*\s*", "", caption)
+    caption = re.sub(r"^[Hh][Mm][Bb]\s*[-:]*\s*", "", caption)
     caption = re.sub(r"\s+", " ", caption).strip()
 
     # Complete modern emoji range matching all emoticons, gestures, faces and symbols
@@ -48,35 +72,44 @@ def clean_caption_text(caption: str) -> str:
 def caption_node(state: CurationState, llm_client: LLMClient) -> Dict[str, Any]:
     """
     Generate punchy captions, YouTube titles, and descriptions for all approved videos.
+    Enforces that every video receives a unique, content-specific title (never generic duplicates).
     Runs strictly AFTER approval is finalized.
     """
     approved = list(state.get("approved", []))
     logger.info(f"--- [Node: CAPTION] Generating captions & YouTube metadata for {len(approved)} approved clips ---")
 
     sys_prompt = build_caption_system_prompt()
+    used_titles: Set[str] = set()
 
-    for cand in approved:
-        # Check if video was backfilled from reserve pool (already edited with caption & YT metadata)
-        if cand.get("already_edited"):
-            logger.info(f"Skipping caption synthesis for already-edited reserve video: {cand.get('post_id')}")
+    for idx, cand in enumerate(approved):
+        is_already_edited = cand.get("already_edited", False)
+        yt_title = cand.get("youtube_title")
+
+        # If already edited reserve clip with a valid non-generic title that hasn't been used yet
+        if is_already_edited and yt_title and not is_generic_title(yt_title) and yt_title.lower().strip() not in used_titles:
+            logger.info(f"Keeping existing YouTube title for reserve video {cand.get('post_id')}: \"{yt_title}\"")
+            used_titles.add(yt_title.lower().strip())
             continue
 
-        # Only skip the LLM if the human explicitly edited the caption (pressed "E" in review)
+        # If already edited but title is generic, missing, or duplicate, refine its metadata
+        if is_already_edited:
+            logger.info(f"Refining generic/duplicate YouTube title for reserve clip {cand.get('post_id')}...")
+
+        # Only skip LLM if human explicitly edited the caption in interactive review
         is_human_edited = bool(cand.get("caption_edited_by_human"))
         existing_caption = cand.get("caption")
 
         if is_human_edited and existing_caption:
             cleaned = clean_caption_text(existing_caption)
             cand["caption"] = cleaned
-            # Create YouTube metadata if missing
             cand["youtube_title"] = cand.get("youtube_title") or f"{cleaned} #shorts #funny"
             cand["youtube_description"] = cand.get("youtube_description") or (
                 f"Credit to original creator: {cand.get('uploader', 'unknown')}\n"
                 f"Original Post: {cand.get('post_url', '')}\n\n"
                 f"Subscribe for your daily laugh!"
             )
-        else:
-            # Generate via LLM
+        elif not is_already_edited:
+            # Generate via LLM for new clip
             usr_prompt = build_caption_user_prompt(
                 title=cand.get("title", ""),
                 original_caption=cand.get("original_caption", ""),
@@ -99,16 +132,40 @@ def caption_node(state: CurationState, llm_client: LLMClient) -> Dict[str, Any]:
 
             except Exception as e:
                 logger.warning(f"Caption LLM error for {cand.get('post_id')}: {e}. Fallback to cleaned title.")
-                fallback = clean_caption_text(cand.get("title", "Funny moment"))
+                fallback = clean_caption_text(cand.get("title", f"Comedy Moment {idx+1}"))
                 cand["caption"] = fallback
-                cand["youtube_title"] = f"{fallback} 😂 #shorts #funny"
+                cand["youtube_title"] = f"{fallback} #shorts #funny"
                 cand["youtube_description"] = (
                     f"Credit: {cand.get('uploader', 'unknown')}\n"
                     f"Source: {cand.get('post_url', '')}\n\n"
                     f"Subscribe for more funny shorts!"
                 )
+        else:
+            # Already edited reserve clip whose title was generic: synthesize unique title from its original metadata
+            raw_title = cand.get("title") or cand.get("caption") or f"Comedy Moment {idx+1}"
+            cleaned = clean_caption_text(raw_title)
+            cand["youtube_title"] = f"{cleaned} #shorts #funny"
+            if not cand.get("youtube_description"):
+                cand["youtube_description"] = (
+                    f"Credit to creator: {cand.get('uploader', 'unknown')}\n"
+                    f"Original source: {cand.get('post_url', '')}\n\n"
+                    f"Subscribe for daily laughs!"
+                )
 
-        # Save caption.txt next to video file
+        # Enforce strict uniqueness: no video can have a generic or duplicate title
+        curr_title = cand.get("youtube_title", "")
+        if is_generic_title(curr_title) or curr_title.lower().strip() in used_titles:
+            base = clean_caption_text(cand.get("title") or cand.get("caption") or f"Comedy Moment {idx+1}")
+            if not base or is_generic_title(base):
+                base = f"Comedy Moment #{idx+1}"
+            candidate_unique = f"{base} #shorts #funny"
+            if candidate_unique.lower().strip() in used_titles:
+                candidate_unique = f"{base} ({len(used_titles)+1}) #shorts #funny"
+            cand["youtube_title"] = candidate_unique
+
+        used_titles.add(cand["youtube_title"].lower().strip())
+
+        # Save caption.txt next to video file if present
         vid_path_str = cand.get("video_path")
         if vid_path_str:
             vid_path = Path(vid_path_str)
@@ -121,7 +178,7 @@ def caption_node(state: CurationState, llm_client: LLMClient) -> Dict[str, Any]:
                 except Exception as e:
                     logger.warning(f"Could not write caption.txt to {caption_file}: {e}")
 
-        logger.info(f"Caption for {cand.get('post_id')}: \"{cand.get('caption')}\"")
+        logger.info(f"Caption for {cand.get('post_id')}: \"{cand.get('caption')}\" | Title: \"{cand.get('youtube_title')}\"")
 
     return {
         "approved": approved,
