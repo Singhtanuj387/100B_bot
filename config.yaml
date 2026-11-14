@@ -1,0 +1,55 @@
+# ==============================================================================
+# Auto Video Editor Configuration
+# ==============================================================================
+
+# Channel branding
+channel:
+  name: "LaughVault"
+  handle: "laughvault"
+  logo_path: "assets/channel_logo.png"
+  badge_path: "assets/badge.png"
+  verified: false
+
+# Output canvas settings (1080x1920 is standard 9:16 for Reels, Shorts, TikTok)
+canvas:
+  width: 1080
+  height: 1920
+  bg_color: [255, 255, 255]
+
+# Layout dimensions & spacing (calibrated for 1080p)
+layout:
+  padding_left: 72               # Left padding for avatar and caption
+  padding_top_portrait: 160      # Top padding for portrait template
+  avatar_size: 124               # Avatar diameter
+  logo_name_gap: 26              # Gap between logo and channel name
+  header_caption_gap: 58         # Gap between handle and caption text
+  caption_video_gap: 46          # Gap between caption and video
+  video_side_margin: 28          # Outer side margin framing the video
+  bottom_buffer_portrait: 60     # Minimum bottom margin in portrait mode
+
+# Colors (RGB)
+colors:
+  text: [15, 20, 25]             # Dark Twitter/Instagram text
+  handle: [83, 100, 113]         # Secondary gray
+  verified: [29, 155, 240]       # Twitter/X verification blue
+
+# Typography settings
+typography:
+  font_size_name: 44             # Channel name font size (bold)
+  font_size_handle: 35           # @handle font size (regular)
+  font_size_caption: 44          # Caption font size (regular)
+  caption_line_spacing: 16       # Extra line spacing for multi-line captions
+  font_bold: "arialbd.ttf"
+  font_regular: "arial.ttf"
+  font_emoji: "seguiemj.ttf"
+
+# Encoding & Hardware Acceleration
+encoding:
+  gpu: "auto"                    # auto (detects NVIDIA NVENC), nvenc, or cpu
+  cpu_preset: "fast"             # ultrafast, fast, medium, slow
+  cpu_crf: 18                    # 0-51 (lower = higher quality)
+  nvenc_preset: "p4"             # p1 (fastest) to p7 (slowest/highest quality)
+  nvenc_cq: 19                   # Constant quality for NVENC
+  audio_codec: "aac"
+  audio_bitrate: "192k"
+

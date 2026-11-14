@@ -1,0 +1,188 @@
+# ==============================================================================
+#             FEW-SHOT JUDGE EXAMPLES FOR CLAUDE VISION EVALUATION
+# ==============================================================================
+# The judge node injects these examples into the LLM system prompt.
+# Add or modify clips below with realistic descriptions, scores, and rationale.
+
+good_examples:
+  - id: "good_01"
+    title: "Cat miscalculates jump onto kitchen counter and lands in laundry basket"
+    visual_description: "Orange tabby wiggles butt preparing for huge jump, leaps confidently, completely misses the granite counter and slides smoothly into a soft hamper below, looking around confused."
+    funny_score: 9.2
+    is_english_or_no_speech: true
+    is_safe_for_ads: true
+    has_visible_watermark: false
+    reason: "Classic physical comedy, perfect timing, universal visual humor with zero dialogue needed."
+
+  - id: "good_02"
+    title: "Dad tries to demonstrate hoverboard to kids and immediately spins into curtain"
+    visual_description: "Father steps onto hoverboard wearing socks, instantly starts spinning uncontrollably in circles while waving arms, ends tangled in sheer curtains like a burrito while kids laugh."
+    funny_score: 8.8
+    is_english_or_no_speech: true
+    is_safe_for_ads: true
+    has_visible_watermark: false
+    reason: "Relatable family fail, clean harmless slapstick, genuine contagious laughter."
+
+  - id: "good_03"
+    title: "Dog steals whole loaf of bread from table and acts like it's a bone"
+    visual_description: "Golden retriever sneaks up, grabs entire french baguette sideways in jaws, trots through living room with head held high refusing to make eye contact."
+    funny_score: 8.5
+    is_english_or_no_speech: true
+    is_safe_for_ads: true
+    has_visible_watermark: false
+    reason: "Adorable pet antics with high shareability and wholesome comedy."
+
+  - id: "good_04"
+    title: "Kid tries to blow out birthday candle but sibling sneaks behind with electric fan"
+    visual_description: "Toddler takes a deep breath, blows weakly, suddenly a mini battery fan turns on behind him extinguishing the candle; toddler looks at his hands in disbelief thinking he has superpowers."
+    funny_score: 9.0
+    is_english_or_no_speech: true
+    is_safe_for_ads: true
+    has_visible_watermark: false
+    reason: "Clever harmless prank with an adorable reaction shot."
+
+  - id: "good_05"
+    title: "Guy slips on ice but turns it into an unexpected breakdance spin"
+    visual_description: "Man walking down driveway hits black ice, feet fly up, he smoothly drops to his hands, spins 360 degrees on the ice, pops back up and bows to neighbor."
+    funny_score: 8.7
+    is_english_or_no_speech: true
+    is_safe_for_ads: true
+    has_visible_watermark: false
+    reason: "High skill recovery, unexpected turn of events, highly satisfying and humorous."
+
+  - id: "good_06"
+    title: "Parrot mimics microwave beep every time owner approaches oven"
+    visual_description: "Owner reaches for microwave door, cockatoo from across the room emits a loud pitch-perfect 'BEEP BEEP', owner freezes, sighs in exasperation."
+    funny_score: 8.4
+    is_english_or_no_speech: true
+    is_safe_for_ads: true
+    has_visible_watermark: false
+    reason: "Pacing and comedic timing between human and pet is spot on."
+
+  - id: "good_07"
+    title: "Baby tasting lemon slice for the very first time"
+    visual_description: "Baby in high chair bites lemon wedge, eyes scrunch, whole face shudders, then reaches right back out to lick it again with determination."
+    funny_score: 8.2
+    is_english_or_no_speech: true
+    is_safe_for_ads: true
+    has_visible_watermark: false
+    reason: "Classic timeless reaction that universally delights audiences."
+
+  - id: "good_08"
+    title: "Golf swing goes through the legs and rolls backward into cup behind him"
+    visual_description: "Golfer takes an awkward putt, ball ricochets between his ankles, trickles 15 feet behind him directly into practice hole cup."
+    funny_score: 8.6
+    is_english_or_no_speech: true
+    is_safe_for_ads: true
+    has_visible_watermark: false
+    reason: "One-in-a-million accidental trick shot with high engagement potential."
+
+  - id: "good_09"
+    title: "Smart dog opens fridge, takes ice cube, and closes door with snoot"
+    visual_description: "Husky pulls fridge strap with mouth, pushes ice dispenser with paw, catches single cube, then uses nose to push fridge firmly closed."
+    funny_score: 8.3
+    is_english_or_no_speech: true
+    is_safe_for_ads: true
+    has_visible_watermark: false
+    reason: "Impressive animal intelligence paired with funny nonchalant behavior."
+
+  - id: "good_10"
+    title: "Man drops wedding ring during proposal on beach; crab immediately claims it"
+    visual_description: "Groom kneels on sand, box fumbles, ring drops near tide line where a small ghost crab scuttles out and drags it into a sand burrow."
+    funny_score: 8.9
+    is_english_or_no_speech: true
+    is_safe_for_ads: true
+    has_visible_watermark: false
+    reason: "Unbelievable natural comedic timing and suspense."
+
+bad_examples:
+  - id: "bad_01"
+    title: "Guy breaks arm trying to lift 400lb barbell in gym"
+    visual_description: "Person attempts dangerous lift with terrible form, joint visibly snaps, loud screaming in agony."
+    funny_score: 1.0
+    is_english_or_no_speech: true
+    is_safe_for_ads: false
+    has_visible_watermark: false
+    reason: "Severe injury and gore; strictly violates YouTube advertiser safety policies."
+
+  - id: "bad_02"
+    title: "Politician gives boring speech at county meeting"
+    visual_description: "Static camera on podium, middle-aged man reading tax statistics for 45 seconds without any jokes or visual interest."
+    funny_score: 2.1
+    is_english_or_no_speech: true
+    is_safe_for_ads: true
+    has_visible_watermark: false
+    reason: "Zero entertainment value, political subject matter, low engagement."
+
+  - id: "bad_03"
+    title: "Funny compilation from TikTok @best_memes_2026"
+    visual_description: "Cluttered screen with giant bouncing username watermark, bright neon emojis covering half the video, low resolution 240p re-recording."
+    funny_score: 3.5
+    is_english_or_no_speech: true
+    is_safe_for_ads: true
+    has_visible_watermark: true
+    reason: "Heavy third-party watermark and poor visual quality make it unusable for branded channel."
+
+  - id: "bad_04"
+    title: "Two people arguing aggressively in fast food drive-thru"
+    visual_description: "Uncomfortable screaming match with profanity, racial slurs bleeped out, tense hostile atmosphere."
+    funny_score: 1.8
+    is_english_or_no_speech: false
+    is_safe_for_ads: false
+    has_visible_watermark: false
+    reason: "Aggressive confrontation, demonetizable content, negative viewer experience."
+
+  - id: "bad_05"
+    title: "Unboxing a phone charger with no sound"
+    visual_description: "Hands opening a cardboard package for 30 seconds showing a white USB-C cable. No jokes, no twist."
+    funny_score: 1.5
+    is_english_or_no_speech: true
+    is_safe_for_ads: true
+    has_visible_watermark: false
+    reason: "Not funny, mundane commercial unboxing with zero comedic value."
+
+  - id: "bad_06"
+    title: "Foreign street prank with heavy untranslated dialogue"
+    visual_description: "People in a market speaking rapid foreign language for 40 seconds; the joke relies entirely on a spoken pun that non-speakers cannot understand."
+    funny_score: 3.2
+    is_english_or_no_speech: false
+    is_safe_for_ads: true
+    has_visible_watermark: false
+    reason: "Non-English spoken language is essential to the punchline; fails target audience criteria."
+
+  - id: "bad_07"
+    title: "Staged couple prank where reaction is obviously scripted"
+    visual_description: "Girl places rubber snake in kitchen, boyfriend acts startled 2 seconds before seeing it, looks directly into the hidden camera and overacts."
+    funny_score: 3.8
+    is_english_or_no_speech: true
+    is_safe_for_ads: true
+    has_visible_watermark: false
+    reason: "Painfully fake/staged prank that audiences dislike and downvote."
+
+  - id: "bad_08"
+    title: "Car crash at intersection with airbags deploying"
+    visual_description: "High speed T-bone collision, vehicle rolls over, onlookers panic."
+    funny_score: 1.2
+    is_english_or_no_speech: true
+    is_safe_for_ads: false
+    has_visible_watermark: false
+    reason: "Traumatic accident with potential injuries; unsafe for ads and harmful."
+
+  - id: "bad_09"
+    title: "Minecraft gameplay with robotic text-to-speech reading Reddit story"
+    visual_description: "Split-screen parkour gameplay with AI monotone voiceover reading relationship drama."
+    funny_score: 4.1
+    is_english_or_no_speech: true
+    is_safe_for_ads: true
+    has_visible_watermark: false
+    reason: "Generic repetitive low-effort content; does not fit the short physical comedy / genuine humor style."
+
+  - id: "bad_10"
+    title: "Street magician performs basic card trick"
+    visual_description: "Magician reveals a 7 of hearts. It's a standard neat trick, but completely devoid of humor or laughs."
+    funny_score: 4.5
+    is_english_or_no_speech: true
+    is_safe_for_ads: true
+    has_visible_watermark: false
+    reason: "Interesting perhaps, but not funny; our channel specifically curates humor and comedy."
+

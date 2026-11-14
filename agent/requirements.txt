@@ -1,0 +1,12 @@
+langgraph
+langgraph-checkpoint-sqlite
+anthropic
+faster-whisper
+rich
+loguru
+pyyaml
+opencv-python-headless
+python-dotenv
+tzdata
+pytest
+

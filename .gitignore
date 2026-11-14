@@ -1,0 +1,121 @@
+# ==============================================================================
+# Git Ignore - 100B Automated Video Curation & Production Bot
+# ==============================================================================
+
+# --- Environment Variables & Secrets ---
+.env
+*.env
+*.env.*
+!*.env.example
+cookies.txt
+scraper/cookies.txt
+*.pem
+*.key
+credentials.json
+client_secret*.json
+token.pickle
+token.json
+
+# --- SQLite Databases & Cache ---
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+*.sqlite
+*.sqlite3
+scraper/data/*.db
+scraper/data/test_curl.json
+agent/data/*.db
+
+# --- Media & Video Artifacts (Raw & Rendered) ---
+*.mp4
+*.mkv
+*.mov
+*.avi
+*.webm
+*.flv
+*.ts
+video-1.mp4
+
+# Directories containing large scraped media / rendered outputs
+input/
+output/
+temp/
+tmp/
+scraper/data/raw/
+scraper/data/candidates/
+agent/data/raw/
+agent/data/edited/
+agent/data/reserve/
+agent/data/keyframes/
+
+# --- Logs ---
+logs/
+*.log
+scraper/logs/
+agent/logs/
+
+# --- Python Cache & Virtual Environments ---
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual environments
+venv/
+.venv/
+env/
+ENV/
+env.bak/
+venv.bak/
+
+# Testing & Coverage
+.pytest_cache/
+.coverage
+.coverage.*
+.cache
+nosetests.xml
+coverage.xml
+*.cover
+*.py,cover
+.hypothesis/
+htmlcov/
+
+# Type checking
+.mypy_cache/
+.pytype/
+.pyre/
+
+# --- IDE & OS Artifacts ---
+.idea/
+.vscode/
+*.sublime-project
+*.sublime-workspace
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# --- Backup & Temp files ---
+*.bak
+*.bak_*
+*.swp
+*.swo
+*~
+agent/config.yaml.bak_before_gemma

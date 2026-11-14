@@ -1,0 +1,139 @@
+# ==============================================================================
+#             AUTOMATED VIDEO CURATION AGENT — PHASE 3 CONFIG
+# ==============================================================================
+
+timezone: "America/New_York"  # US Eastern Time (primary audience timezone for English comedy YouTube Shorts)
+
+# Execution goals & loop controls
+target_count: 24          # Daily scheduled videos
+spare_buffer: 4           # Extra buffer to ensure 24 ready videos
+max_loops: 3              # Maximum re-planning loops if short on candidates
+recursion_limit: 100      # LangGraph recursion limit for multi-loop execution
+parallel_edits: 2         # Concurrency limit for video editing to protect CPU/GPU
+
+# Cost & LLM safety controls
+cost_limits:
+  max_cost_per_run_usd: 2.00   # Maximum LLM cost cap per curation run (USD)
+  max_llm_calls_per_run: 100
+  request_timeout_seconds: 75  # Per-call timeout (60-90s) for every Google / LLM request to prevent hanging
+  judge_total_timeout_seconds: 300 # Total time limit (5 mins) for entire vision judge node
+  judge_max_failure_rate: 0.30 # Maximum allowed judge failure rate (30%) before aborting run
+
+# Per-Model Quota & Rate Limit Protection (Peak RPM, TPM, RPD)
+rate_limits:
+  safety_buffer: 0.85                   # Target 85% of quota threshold to prevent 429 errors
+  models:
+    "gemma-4-31b-it":
+      max_requests_per_minute: 30       # Peak RPM: 30 calls / minute
+      max_input_tokens_per_minute: 16000 # Peak TPM: 16,000 input tokens / minute (vision judge)
+      max_requests_per_day: 14400       # Peak RPD: 14,400 requests / day
+    "gemini-3.1-flash-lite":
+      max_requests_per_minute: 15       # Peak RPM: 15 calls / minute
+      max_input_tokens_per_minute: 250000 # Peak TPM: 250,000 tokens / minute (unthrottled for fast text calls)
+      max_requests_per_day: 500         # Peak RPD: 500 requests / day
+    "claude-3-5-haiku":
+      max_requests_per_minute: 50
+      max_input_tokens_per_minute: 50000
+      max_requests_per_day: 5000
+    default:
+      max_requests_per_minute: 30
+      max_input_tokens_per_minute: 30000
+      max_requests_per_day: 1000
+
+# LLM model selection (Google GenAI Gemini / Gemma or Anthropic Claude)
+models:
+  judge: "gemma-4-31b-it"               # vision judge: Gemma 4 31B (30 RPM, 16k TPM, 14.4k RPD)
+  judge_fallback: "gemini-3.1-flash-lite" # vision fallback if Gemma has demand spikes (500 RPD, multimodal)
+  caption: "gemini-3.1-flash-lite"      # text-only: Flash Lite (15 RPM, 250k TPM, 500 RPD)
+  plan: "gemini-3.1-flash-lite"         # text-only
+  discover: "gemini-3.1-flash-lite"     # text-only, 1 call/day
+  title_prescreen: "gemini-3.1-flash-lite" # Verified fast lightweight text model for title pre-screening
+
+judge_workers: 4                       # 4 parallel workers paced by 16k TPM token rate limiter
+
+# Scoring & decision thresholds
+scoring:
+  llm_weight: 0.70                      # Weight given to LLM funny score (1-10)
+  engagement_weight: 0.30               # Weight given to normalized upvotes/likes
+  auto_approve_threshold: 8.0           # >= 8.0: Auto approved
+  auto_reject_threshold: 5.0            # < 5.0: Auto rejected
+  human_review_min: 5.0                 # 5.0 to 7.9: Sent to human review
+  human_review_max: 7.99
+
+# Zero-cost pre-filtering & audio language check
+filters:
+  min_duration: 5.0                     # Minimum video duration in seconds
+  max_duration: 60.0                    # Maximum video duration in seconds
+  min_resolution_height: 480            # Minimum vertical resolution
+  blocked_words:
+    - "death"
+    - "kill"
+    - "gore"
+    - "blood"
+    - "politics"
+    - "biden"
+    - "trump"
+    - "war"
+    - "murder"
+    - "racist"
+    - "suicide"
+    - "terrorist"
+    - "interview"
+    - "broadcast"
+    - "talk show"
+    - "fallon"
+    - "kimmel"
+    - "colbert"
+    - "conan"
+    - "movie clip"
+    - "tv show"
+    - "hollywood"
+  whisper:
+    enabled: true
+    model_size: "tiny"                  # "tiny" or "base"
+    compute_type: "int8"
+    vad_filter: true                    # Voice activity detection to find speech
+    check_duration_seconds: 20          # Only check first 20 seconds of audio
+
+# Video frame sampling for Vision LLM
+vision:
+  sample_frames: 3                      # Sample 3 keyframes across video duration
+  target_width: 360                     # Downscaled to 360px width to lower tokens and accelerate evaluation
+
+# Peak publishing hours (24h format in America/New_York) for highest-scoring videos (Lunch: 12-2 PM, Evening: 5-9 PM EST)
+peak_hours:
+  - 12
+  - 13
+  - 14
+  - 17
+  - 18
+  - 19
+  - 20
+  - 21
+
+# Allowed sources and exploration targets (Reddit is primary; Twitter is experimental)
+allowed_sources:
+  twitter_enabled: false                # Explicitly disabled; Reddit is primary
+  subreddits:
+    - "funny"
+    - "Unexpected"
+    - "instant_regret"
+    - "holdmybeer"
+    - "Whatcouldgowrong"
+    - "oddlysatisfying"
+    - "MadeMeSmile"
+    - "AnimalsBeingDerps"
+    - "IdiotsInCars"
+    - "nonononoyes"
+    - "therewasanattempt"
+    - "ContagiousLaughter"
+    - "Catculations"
+    - "dadjokes"
+    - "ChildrenFallingOver"
+  # Experimental: X (Twitter) accounts (requires cookies.txt for auth)
+  twitter_accounts:
+    - "DailyViralVids"
+    - "AnimalsWorld"
+    - "WholesomeMeme"
+    - "LaughsDaily"
+

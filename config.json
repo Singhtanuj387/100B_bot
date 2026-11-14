@@ -1,0 +1,9 @@
+{
+    "channel_name": "Cheerful Videos",
+    "handle": "Cheerfulvids",
+    "logo_path": "assets/a-logo.png",
+    "verified": true,
+    "preset": "fast",
+    "crf": 18,
+    "gpu": "auto"
+}

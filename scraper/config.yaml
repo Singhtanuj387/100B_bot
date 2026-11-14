@@ -1,0 +1,117 @@
+# ==============================================================================
+# Automated Video Scraper Configuration (Phase 2)
+# ==============================================================================
+
+general:
+  target_count: 40               # Target number of unique funny videos to download
+  parallel_downloads: 4          # Concurrent download threads
+  data_dir: "data"               # Base directory for raw videos and SQLite db
+  logs_dir: "logs"               # Log storage directory
+
+# Reddit Source Settings
+reddit:
+  enabled: true
+  subreddits:
+    - "funny"
+    - "Unexpected"
+    - "instant_regret"
+    - "holdmybeer"
+    - "Whatcouldgowrong"
+    - "oddlysatisfying"
+    - "MadeMeSmile"
+    - "AnimalsBeingDerps"
+    - "ContagiousLaughter"
+    - "nonononoyes"
+    - "maybemaybemaybe"
+    - "funnyvideos"
+  listings:
+    - "hot"
+    - "top_day"
+    - "rising"
+  limit_per_sub: 25              # Candidates to pull per listing
+  rate_limit_delay: [1.2, 2.5]   # Random jitter delay (seconds) between requests
+  cookies_file: "cookies.txt"    # Optional exported browser cookies for yt-dlp
+
+# X (Twitter) Source Settings (EXPERIMENTAL: Profile pages usually require login cookies)
+twitter:
+  enabled: false                 # Experimental: Default disabled; test Reddit-only first
+  accounts:
+    - "awkwardviral"
+    - "OutOfContext"
+    - "DailyLoud"
+    - "ViralMemes"
+    - "LaughsDaily"
+    - "TheFigen_"
+  search_queries:
+    - "funny video filter:videos min_faves:500"
+    - "hilarious clip filter:videos min_faves:300"
+  cookies_file: "cookies.txt"    # Optional exported browser cookies for yt-dlp / Playwright
+  use_playwright_fallback: true  # Use headless Playwright if yt-dlp fails on X
+  headless: true
+  rate_limit_delay: [2.0, 4.0]   # Delay (seconds) between X requests
+
+# Quality & Safety Filters
+filters:
+  min_duration: 5.0              # Minimum length in seconds
+  max_duration: 60.0             # Maximum length in seconds
+  min_height: 480                # Minimum resolution height
+  min_width: 480                 # Minimum resolution width
+  skip_nsfw: true                # Reject NSFW / 18+ content
+  enforce_english: true          # Filter out non-English / foreign titles
+  min_upvotes: 50                # Minimum upvotes / likes threshold
+  keyword_blocklist:
+    - "dead"
+    - "died"
+    - "death"
+    - "kill"
+    - "murder"
+    - "gore"
+    - "blood"
+    - "suicide"
+    - "politics"
+    - "democrat"
+    - "republican"
+    - "trump"
+    - "biden"
+    - "election"
+    - "racist"
+    - "terrorist"
+    - "war"
+    - "ukraine"
+    - "russia"
+    - "israel"
+    - "gaza"
+    - "shooting"
+    - "fatal"
+    - "injur"
+    - "interview"
+    - "broadcast"
+    - "talk show"
+    - "fallon"
+    - "kimmel"
+    - "colbert"
+    - "conan"
+    - "movie clip"
+    - "tv show"
+    - "hollywood"
+
+# Deduplication Settings
+deduplication:
+  db_path: "data/videos.db"
+  phash_threshold: 6             # Max Hamming distance to consider two clips identical (0-64)
+  sample_frame_percentages: [15, 50, 85] # Frame extraction checkpoints for perceptual hashing
+
+# Caption Cleaning & Generation
+captions:
+  max_words: 8                   # Maximum words for punchy social captions
+  clean_reddit_tags: true        # Strips [OC], (OC), [Video], r/sub, u/user
+  clean_urls_hashtags: true      # Strips https:// and #hashtags
+  clean_mentions: true           # Strips @username
+
+# HTTP & Network Resilience
+http:
+  timeout: 15.0                  # Request timeout in seconds
+  max_retries: 3                 # Exponential backoff retries
+  backoff_factor: 1.5
+  proxies: []                    # Optional proxy list (e.g. ["http://127.0.0.1:8080"])
+
