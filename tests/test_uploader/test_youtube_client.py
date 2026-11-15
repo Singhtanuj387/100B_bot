@@ -159,7 +159,9 @@ def test_upload_slot_scheduled_with_confirm_public(mock_media, mock_val, mock_yo
     mock_request = MagicMock()
     mock_request.next_chunk.return_value = (None, {"id": "yt_vid_888"})
     mock_youtube.videos().insert.return_value = mock_request
-    mock_youtube.videos().list().execute.return_value = {"items": [{"status": {"privacyStatus": "private"}}]}
+    mock_youtube.videos().list().execute.return_value = {
+        "items": [{"status": {"privacyStatus": "private", "publishAt": "2026-11-20T17:00:00Z"}}]
+    }
 
     status, video_id, err = uploader.upload_slot(
         slot=slot,
@@ -181,7 +183,7 @@ def test_upload_slot_scheduled_with_confirm_public(mock_media, mock_val, mock_yo
 def test_check_unaudited_lock_detection(mock_alert, mock_youtube, mock_db, sample_config):
     uploader = YouTubeUploader(mock_youtube, config=sample_config, db=mock_db)
 
-    # YouTube returned private when requested as public
+    # Realtime mode: YouTube returned private when requested as public
     mock_youtube.videos().list().execute.return_value = {
         "items": [{"status": {"privacyStatus": "private"}}]
     }
@@ -190,3 +192,38 @@ def test_check_unaudited_lock_detection(mock_alert, mock_youtube, mock_db, sampl
     assert mock_alert.called
     alert_args = mock_alert.call_args
     assert alert_args[0][0] == "UNAUDITED_PROJECT_LOCK"
+
+
+@patch("uploader.youtube_client.send_telegram_alert")
+def test_check_unaudited_lock_scheduled_missing_publish_at(mock_alert, mock_youtube, mock_db, sample_config):
+    uploader = YouTubeUploader(mock_youtube, config=sample_config, db=mock_db)
+
+    # Scheduled mode: YouTube returned private WITHOUT publishAt (dropped schedule / unaudited lock)
+    mock_youtube.videos().list().execute.return_value = {
+        "items": [{"status": {"privacyStatus": "private"}}]
+    }
+
+    is_ok = uploader.check_unaudited_lock(
+        video_id="sched_vid_456",
+        requested_privacy="private",
+        expected_publish_at="2026-11-20T17:00:00Z",
+    )
+    assert not is_ok
+    assert mock_alert.called
+    alert_args = mock_alert.call_args
+    assert alert_args[0][0] == "UNAUDITED_PROJECT_LOCK"
+    assert "publishAt" in alert_args[0][1]
+
+    # Now verify that when status.publishAt IS returned, no alert is sent
+    mock_alert.reset_mock()
+    mock_youtube.videos().list().execute.return_value = {
+        "items": [{"status": {"privacyStatus": "private", "publishAt": "2026-11-20T17:00:00Z"}}]
+    }
+
+    is_ok2 = uploader.check_unaudited_lock(
+        video_id="sched_vid_456",
+        requested_privacy="private",
+        expected_publish_at="2026-11-20T17:00:00Z",
+    )
+    assert is_ok2
+    assert not mock_alert.called

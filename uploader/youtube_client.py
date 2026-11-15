@@ -442,7 +442,11 @@ class YouTubeUploader:
             return "failed", None, str(e)
 
         # 10. Post-Upload Verification & Unaudited Lock Detection
-        self.check_unaudited_lock(video_id, requested_privacy=privacy_status)
+        self.check_unaudited_lock(
+            video_id,
+            requested_privacy=privacy_status,
+            expected_publish_at=publish_at_rfc3339,
+        )
 
         # 11. Record Success in DB & schedule.json
         self.db.update_status(
@@ -466,13 +470,24 @@ class YouTubeUploader:
 
         return final_status, video_id, None
 
-    def check_unaudited_lock(self, video_id: str, requested_privacy: str):
+    def check_unaudited_lock(
+        self,
+        video_id: str,
+        requested_privacy: str,
+        expected_publish_at: Optional[str] = None,
+    ) -> bool:
         """
-        Verify post-upload status. If YouTube forced the video to private due to unverified project,
-        log a clear warning and send a notification without failing the upload.
+        Verify post-upload status.
+        - For public uploads: If YouTube forced the video to private due to unverified project,
+          log a clear warning and send an alert.
+        - For scheduled uploads: If expected_publish_at was requested, verify that status.publishAt
+          is returned by YouTube. If publishAt is missing, alert that YouTube dropped the schedule
+          and locked the video as a private draft.
+        Does NOT treat it as a code failure.
+        Returns True if status matches expectations, False if unaudited lock/missing publishAt detected.
         """
         if not self.youtube:
-            return
+            return True
 
         try:
             self.quota.record_read()
@@ -481,6 +496,9 @@ class YouTubeUploader:
             if items:
                 status = items[0].get("status", {})
                 actual_privacy = status.get("privacyStatus")
+                actual_publish_at = status.get("publishAt")
+
+                # Case 1: Realtime public upload forced to private
                 if requested_privacy == "public" and actual_privacy == "private":
                     msg = (
                         f"API project not audited; video {video_id} was locked private by YouTube. "
@@ -488,5 +506,24 @@ class YouTubeUploader:
                     )
                     logger.warning(msg)
                     send_telegram_alert("UNAUDITED_PROJECT_LOCK", msg, {"video_id": video_id})
+                    return False
+
+                # Case 2: Scheduled upload missing publishAt
+                if expected_publish_at and not actual_publish_at:
+                    msg = (
+                        f"API project not audited; video {video_id} is missing status.publishAt "
+                        f"(expected: {expected_publish_at}). YouTube locked the video as a plain private draft without scheduling. "
+                        f"Complete Google OAuth app verification."
+                    )
+                    logger.warning(msg)
+                    send_telegram_alert("UNAUDITED_PROJECT_LOCK", msg, {
+                        "video_id": video_id,
+                        "expected_publish_at": expected_publish_at,
+                        "actual_privacy": actual_privacy,
+                    })
+                    return False
+
+            return True
         except Exception as e:
             logger.debug(f"Could not check post-upload status for {video_id}: {e}")
+            return True

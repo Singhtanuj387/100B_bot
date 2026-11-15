@@ -263,6 +263,25 @@ def cmd_verify(args):
                 f"processingStatus='{processing_status}', rejectionReason='{rejection_reason}'"
             )
 
+            # Check for scheduled uploads that lost publishAt (unaudited project restriction)
+            target_publish_at = up.get("publish_at")
+            if target_publish_at and not v_status.get("publishAt"):
+                try:
+                    slot_dt = datetime.fromisoformat(target_publish_at)
+                    if datetime.now(timezone.utc) < slot_dt:
+                        sched_msg = (
+                            f"Scheduled video {video_id} ({post_id}) is missing status.publishAt "
+                            f"(expected: {target_publish_at}). YouTube locked the video as a private draft."
+                        )
+                        logger.warning(sched_msg)
+                        send_telegram_alert("UNAUDITED_PROJECT_LOCK", sched_msg, {
+                            "video_id": video_id,
+                            "post_id": post_id,
+                            "expected_publish_at": target_publish_at,
+                        })
+                except Exception:
+                    pass
+
             # Rejections & failures
             if upload_status in ("rejected", "failed") or rejection_reason:
                 msg = f"Video {video_id} ({post_id}) rejected by YouTube: {rejection_reason or upload_status}"
