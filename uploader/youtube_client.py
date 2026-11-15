@@ -141,6 +141,9 @@ class YouTubeUploader:
         Scan recent uploads on the channel for hidden marker [ref:<post_id>].
         Used during crash recovery to prevent duplicate uploads.
         """
+        if not self.youtube:
+            return None
+
         playlist_id = self.get_uploads_playlist_id()
         if not playlist_id:
             return None
@@ -227,13 +230,15 @@ class YouTubeUploader:
             return existing_record["status"], video_id, None
 
         # 2. Crash Recovery Check on YouTube Channel (via hidden ref marker)
-        recovered_id = self.find_uploaded_video_by_ref(post_id)
-        if recovered_id:
-            logger.success(f"Crash recovery successful for {post_id}: synced video_id {recovered_id}")
-            self.db.record_attempt(post_id, target_date, slot_time_str, "uploaded", video_id=recovered_id)
-            if schedule_path:
-                update_schedule_slot(schedule_path, post_id, {"status": "uploaded", "video_id": recovered_id})
-            return "uploaded", recovered_id, None
+        # Skip remote lookup if there is no API client or in dry-run mode
+        if self.youtube and not dry_run:
+            recovered_id = self.find_uploaded_video_by_ref(post_id)
+            if recovered_id:
+                logger.success(f"Crash recovery successful for {post_id}: synced video_id {recovered_id}")
+                self.db.record_attempt(post_id, target_date, slot_time_str, "uploaded", video_id=recovered_id)
+                if schedule_path:
+                    update_schedule_slot(schedule_path, post_id, {"status": "uploaded", "video_id": recovered_id})
+                return "uploaded", recovered_id, None
 
         # 3. Timing Constraints Check
         if mode == "scheduled":
