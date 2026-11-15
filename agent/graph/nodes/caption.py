@@ -83,7 +83,15 @@ def caption_node(state: CurationState, llm_client: LLMClient) -> Dict[str, Any]:
 
     for idx, cand in enumerate(approved):
         is_already_edited = cand.get("already_edited", False)
+        is_reserve = cand.get("is_reserve_backfill", False)
         yt_title = cand.get("youtube_title")
+        caption = cand.get("caption")
+
+        # If reserve clip with an already generated caption and valid non-generic title
+        if is_reserve and caption and yt_title and not is_generic_title(yt_title) and yt_title.lower().strip() not in used_titles:
+            logger.info(f"Keeping existing caption & YouTube title for reserve video {cand.get('post_id')}: \"{yt_title}\"")
+            used_titles.add(yt_title.lower().strip())
+            continue
 
         # If already edited reserve clip with a valid non-generic title that hasn't been used yet
         if is_already_edited and yt_title and not is_generic_title(yt_title) and yt_title.lower().strip() not in used_titles:
@@ -91,8 +99,8 @@ def caption_node(state: CurationState, llm_client: LLMClient) -> Dict[str, Any]:
             used_titles.add(yt_title.lower().strip())
             continue
 
-        # If already edited but title is generic, missing, or duplicate, refine its metadata
-        if is_already_edited:
+        # If reserve clip but title is generic, missing, or duplicate, refine its metadata
+        if is_reserve or is_already_edited:
             logger.info(f"Refining generic/duplicate YouTube title for reserve clip {cand.get('post_id')}...")
 
         # Only skip LLM if human explicitly edited the caption in interactive review

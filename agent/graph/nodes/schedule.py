@@ -132,22 +132,33 @@ def schedule_node(
     approved.sort(key=lambda x: x.get("score", 0.0), reverse=True)
 
     # Surplus handling: save extra approved clips to reserve_pool
+    # ARCHITECTURAL RULE: Keep the raw clip and caption in reserve; edit only when scheduled.
     if len(approved) > target_count:
         surplus = approved[target_count:]
         approved = approved[:target_count]
-        logger.info(f"Saving {len(surplus)} surplus approved clips to reserve_pool for future days.")
+        logger.info(f"Saving {len(surplus)} surplus approved clips (raw + caption) to reserve_pool for future days.")
         for s in surplus:
-            v_path = s.get("edited_video_path") or s.get("video_path")
-            if not dry_run and (not v_path or not Path(v_path).is_file()):
-                logger.warning(f"Skipping surplus clip '{s.get('post_id')}' with missing file: {v_path}")
+            raw_v_path = s.get("raw_video_path") or s.get("video_path")
+            if not dry_run and (not raw_v_path or not Path(raw_v_path).is_file()):
+                logger.warning(f"Skipping surplus clip '{s.get('post_id')}' with missing raw file: {raw_v_path}")
                 continue
+
+            # Clean up any surplus edited file so we don't store pre-branded media
+            edited_v_path = s.get("edited_video_path")
+            if not dry_run and edited_v_path and Path(edited_v_path).is_file():
+                try:
+                    Path(edited_v_path).unlink()
+                    logger.debug(f"Removed surplus branded video: {edited_v_path}")
+                except Exception as e:
+                    logger.warning(f"Failed to remove surplus branded video {edited_v_path}: {e}")
+
             # Ensure saved title in reserve pool is specific and not generic
             s_title = s.get("youtube_title") or s.get("title")
             if is_generic_title(s_title):
                 s_title = s.get("title") or s.get("caption") or f"Comedy Clip #{s['post_id']}"
             db.add_to_reserve_pool({
                 "post_id": s["post_id"],
-                "video_path": v_path,
+                "video_path": raw_v_path,
                 "caption": s.get("caption"),
                 "title": s_title,
                 "description": s.get("youtube_description") or s.get("caption"),

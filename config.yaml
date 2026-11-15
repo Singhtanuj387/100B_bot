@@ -4,11 +4,11 @@
 
 # Channel branding
 channel:
-  name: "LaughVault"
-  handle: "laughvault"
-  logo_path: "assets/channel_logo.png"
+  name: "Betterverse"
+  handle: "betterverse-f2"
+  logo_path: "assets/a-logo.png"
   badge_path: "assets/badge.png"
-  verified: false
+  verified: true
 
 # Output canvas settings (1080x1920 is standard 9:16 for Reels, Shorts, TikTok)
 canvas:

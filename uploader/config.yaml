@@ -24,7 +24,7 @@ upload:
 
 quota:
   daily_cap: 10000               # Default YouTube Data API v3 daily quota limit (resets midnight PT)
-  insert_cost: 1600              # Quota cost per videos.insert (standard YouTube documentation specifies 1,600 units;
+  insert_cost: 0              # Quota cost per videos.insert (standard YouTube documentation specifies 1,600 units;
                                  # NOTE: Check your Google Cloud Console quota page after the first real upload.
                                  # If your project is billed 1 unit per upload, set insert_cost: 1 here)
   list_cost: 1                   # Quota cost per videos.list call

@@ -63,7 +63,16 @@ def test_schedule_surplus_handling(schedule_config, mock_db):
         "target_date": "2026-11-15",
         "dry_run": True,
         "approved": [
-            {"post_id": f"vid_{i}", "score": 8.0 + (i * 0.2), "source": "reddit", "video_path": f"v{i}.mp4", "title": f"V {i}"}
+            {
+                "post_id": f"vid_{i}",
+                "score": 8.0 + (i * 0.2),
+                "source": "reddit",
+                "video_path": f"raw_v{i}.mp4",
+                "raw_video_path": f"raw_v{i}.mp4",
+                "edited_video_path": f"edited_v{i}.mp4",
+                "caption": f"Caption {i} 😂",
+                "title": f"V {i}",
+            }
             for i in range(6)
         ],
     }
@@ -74,6 +83,10 @@ def test_schedule_surplus_handling(schedule_config, mock_db):
     assert len(slots) == 4
     # Surplus (2 items) saved to reserve pool
     assert mock_db.add_to_reserve_pool.call_count == 2
+    # Verify raw video path was saved to reserve pool (NOT edited path)
+    saved_item = mock_db.add_to_reserve_pool.call_args_list[0][0][0]
+    assert "raw_v" in saved_item["video_path"]
+    assert "edited_v" not in saved_item["video_path"]
 
 
 def test_slot_count_follows_target(schedule_config, mock_db):

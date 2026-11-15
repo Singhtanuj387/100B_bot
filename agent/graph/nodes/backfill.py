@@ -86,12 +86,17 @@ def backfill_node(state: CurationState, db: AgentDatabase) -> Dict[str, Any]:
             db.mark_reserve_missing(missing_ids)
 
         if valid_reserves:
-            logger.info(f"Backfilling {len(valid_reserves)} verified videos from reserve pool.")
+            logger.info(f"Backfilling {len(valid_reserves)} verified raw videos from reserve pool.")
             for r in valid_reserves:
                 r["status"] = "reserve_backfill"
                 r["is_reserve_backfill"] = True
-                r["already_edited"] = True
-                r["edited_video_path"] = r.get("video_path")
+                # Reserve pool clips keep raw media and are edited fresh with current branding when scheduled
+                r["already_edited"] = False
+                raw_path = r.get("raw_video_path") or r.get("video_path")
+                r["video_path"] = raw_path
+                r["raw_video_path"] = raw_path
+                r.pop("edited_video_path", None)
+
                 res_title = r.get("title")
                 if is_generic_title(res_title):
                     r["youtube_title"] = None
@@ -99,6 +104,8 @@ def backfill_node(state: CurationState, db: AgentDatabase) -> Dict[str, Any]:
                     r["youtube_title"] = res_title
                 if "description" in r and not r.get("youtube_description"):
                     r["youtube_description"] = r["description"]
+                if "caption" in r and not r.get("caption"):
+                    r["caption"] = r.get("caption")
                 approved.append(r)
             db.mark_reserve_used([r["post_id"] for r in valid_reserves])
 

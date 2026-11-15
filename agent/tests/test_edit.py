@@ -49,6 +49,44 @@ def test_edit_node_skips_already_edited():
     assert res_clip["edit_status"] == "success"
 
 
+def test_edit_node_brands_backfilled_reserve_clips():
+    """Verify reserve pool clips (raw clip + caption) get branded when scheduled."""
+    mock_editor = MagicMock()
+
+    state = {
+        "approved": [
+            {
+                "post_id": "res_backfill_1",
+                "video_path": "scraper/data/raw/2026-11-14/res_backfill_1/video.mp4",
+                "raw_video_path": "scraper/data/raw/2026-11-14/res_backfill_1/video.mp4",
+                "already_edited": False,
+                "is_reserve_backfill": True,
+                "caption": "Backfilled caption 😂",
+            },
+        ],
+        "target_date": "2026-11-20",
+        "dry_run": False,
+    }
+
+    mock_editor.batch_edit.return_value = [
+        {
+            "original_vid": state["approved"][0],
+            "edited_video_path": "agent/data/edited/2026-11-20/res_backfill_1_branded.mp4",
+            "edit_status": "success",
+        }
+    ]
+
+    result = edit_node(state, mock_editor)
+
+    assert mock_editor.batch_edit.call_count == 1
+    tasks = mock_editor.batch_edit.call_args[1]["tasks"]
+    assert len(tasks) == 1
+    assert tasks[0]["post_id"] == "res_backfill_1"
+    assert tasks[0]["video_path"] == "scraper/data/raw/2026-11-14/res_backfill_1/video.mp4"
+    assert result["approved"][0]["edited_video_path"] == "agent/data/edited/2026-11-20/res_backfill_1_branded.mp4"
+
+
+
 def test_editor_compositing_90_second_clip():
     """Verify that 90-second clips generate valid FFmpeg scaling and compositing commands."""
     import importlib.util

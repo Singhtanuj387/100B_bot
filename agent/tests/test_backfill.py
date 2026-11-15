@@ -47,7 +47,8 @@ def test_backfill_sufficient_reserves(mock_db):
         assert len(result["approved"]) == 3
         assert result["approved"][1]["status"] == "reserve_backfill"
         assert result["approved"][1]["is_reserve_backfill"] is True
-        assert result["approved"][1]["already_edited"] is True
+        assert result["approved"][1]["already_edited"] is False
+        assert result["approved"][1]["video_path"] == str(f1)
         mock_db.fetch_reserve_pool_candidates.assert_called_once_with(limit=20)
         mock_db.mark_reserve_used.assert_called_once_with(["res1", "res2"])
 

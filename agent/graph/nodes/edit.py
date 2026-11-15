@@ -27,6 +27,10 @@ def edit_node(
     tasks = []
     already_edited_clips = []
     for vid in approved:
+        # Guarantee raw_video_path is preserved on candidate dictionary
+        if not vid.get("raw_video_path"):
+            vid["raw_video_path"] = vid.get("video_path")
+
         if vid.get("already_edited"):
             logger.info(f"Skipping video branding for already-edited reserve video: {vid.get('post_id')}")
             vid["edited_video_path"] = vid.get("edited_video_path") or vid.get("video_path")
@@ -36,7 +40,7 @@ def edit_node(
 
         tasks.append({
             "post_id": vid["post_id"],
-            "video_path": vid["video_path"],
+            "video_path": vid.get("raw_video_path") or vid["video_path"],
             "caption": vid.get("caption") or vid.get("title", "Funny moment"),
             "original_vid": vid,
         })
@@ -54,6 +58,7 @@ def edit_node(
         orig = r["original_vid"]
         orig["edited_video_path"] = r.get("edited_video_path")
         orig["edit_status"] = r.get("edit_status")
+        orig["raw_video_path"] = orig.get("raw_video_path") or orig.get("video_path")
         updated_approved.append(orig)
 
     # Filter to only successful edits (or dry-run simulated)
