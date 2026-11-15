@@ -111,3 +111,51 @@ def test_purge_old_media_safety_rules(tmp_path):
     assert reserve_vid.exists(), "Reserve pool media must NEVER be deleted"
     assert db_file.exists(), "Database must NEVER be deleted"
     assert res["purged_files"] == 1
+
+
+def test_purge_old_media_skips_available_reserve_pool_clips(tmp_path):
+    cutoff_old = (datetime.now() - timedelta(days=20)).strftime("%Y-%m-%d")
+    old_edited_dir = tmp_path / "agent" / "data" / "edited" / cutoff_old
+    old_edited_dir.mkdir(parents=True, exist_ok=True)
+
+    # File 1: An old edited video that is NOT in the reserve pool (should be deleted)
+    normal_vid = old_edited_dir / "normal_clip.mp4"
+    normal_vid.write_bytes(b"normal")
+
+    # File 2: An old edited video that IS in reserve_pool with status 'available' (MUST be preserved)
+    reserve_vid = old_edited_dir / "reserve_clip.mp4"
+    reserve_vid.write_bytes(b"reserve")
+
+    # Set up test database with reserve_pool table
+    db_file = tmp_path / "agent.db"
+    db = UploadDatabase(db_file)
+    with db._get_connection() as conn:
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS reserve_pool (
+                post_id TEXT PRIMARY KEY,
+                video_path TEXT,
+                status TEXT
+            );
+        """)
+        conn.execute(
+            "INSERT INTO reserve_pool (post_id, video_path, status) VALUES (?, ?, ?);",
+            ("res_1", str(reserve_vid), "available"),
+        )
+        conn.commit()
+
+    # First purge: reserve_vid should be preserved, normal_vid purged
+    res = purge_old_media(retention_days=14, base_dir=tmp_path, db=db)
+    assert not normal_vid.exists(), "Normal old video should be purged"
+    assert reserve_vid.exists(), "Available reserve pool clip must be preserved even if old"
+    assert res["purged_files"] == 1
+
+    # Now mark reserve clip as 'used'
+    with db._get_connection() as conn:
+        conn.execute("UPDATE reserve_pool SET status = 'used' WHERE post_id = 'res_1';")
+        conn.commit()
+
+    # Second purge: now reserve_vid is no longer available, so it should be purged
+    res2 = purge_old_media(retention_days=14, base_dir=tmp_path, db=db)
+    assert not reserve_vid.exists(), "Used reserve pool clip can now be purged"
+    assert res2["purged_files"] == 1
+

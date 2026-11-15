@@ -49,15 +49,23 @@ def purge_old_media(
     
     STRICT SAFETY RULES:
     1. Only removes media files (.mp4, .mov, .mkv, .webm, .avi) in dated directories older than retention_days.
-    2. NEVER touches the reserve pool (agent/data/reserve).
+    2. NEVER touches the reserve pool directory (agent/data/reserve).
     3. NEVER touches deduplication, agent, or registry databases (*.db).
     4. NEVER deletes schedule.json or meta.json.
+    5. NEVER deletes any video file referenced by an available row in the reserve_pool table.
     """
     root = Path(base_dir or DEFAULT_BASE_DIR).resolve()
     cutoff_dt = datetime.now() - timedelta(days=retention_days)
     cutoff_date_str = cutoff_dt.strftime("%Y-%m-%d")
 
-    logger.info(f"Purging media older than {retention_days} days (Cutoff: {cutoff_date_str})...")
+    uploader_db = db or UploadDatabase()
+    protected_reserve_paths = uploader_db.get_available_reserve_video_paths()
+    protected_reserve_names = {p.name for p in protected_reserve_paths}
+
+    logger.info(
+        f"Purging media older than {retention_days} days (Cutoff: {cutoff_date_str}) | "
+        f"Protecting {len(protected_reserve_paths)} active reserve pool clip(s)..."
+    )
 
     targets = [
         root / "agent" / "data" / "published",
@@ -98,6 +106,11 @@ def purge_old_media(
             for f in date_dir.glob("*"):
                 # Safety checks: never delete DB, schedule.json, or meta.json
                 if f.name in ("schedule.json", "meta.json") or f.suffix.lower() in (".db", ".sqlite", ".json"):
+                    continue
+
+                # Safety check: NEVER delete active reserve clips even if located in older edited folders
+                if f.resolve() in protected_reserve_paths or f.name in protected_reserve_names:
+                    logger.info(f"Preserving active reserve pool clip: {f}")
                     continue
 
                 if f.suffix.lower() in video_extensions:

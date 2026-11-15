@@ -269,6 +269,28 @@ class UploadDatabase:
             ).fetchone()
             return int(row["cnt"]) if row else 0
 
+    def get_available_reserve_video_paths(self) -> set:
+        """
+        Query reserve_pool table for paths of all active/available reserve clips.
+        Returns a set of resolved Path objects that must never be purged.
+        """
+        with self._get_connection() as conn:
+            try:
+                rows = conn.execute(
+                    "SELECT video_path FROM reserve_pool WHERE status = 'available'"
+                ).fetchall()
+                paths = set()
+                for r in rows:
+                    p = r["video_path"]
+                    if p:
+                        try:
+                            paths.add(Path(p).resolve())
+                        except Exception:
+                            pass
+                return paths
+            except sqlite3.OperationalError:
+                return set()
+
 
 def update_schedule_slot(schedule_path: Path, post_id: str, updates: Dict[str, Any]):
     """
