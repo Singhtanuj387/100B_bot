@@ -152,3 +152,43 @@ def test_kill_switch_stop_file(mock_exists, mock_youtube, mock_db, sample_config
     assert status == "pending"
     assert "Kill switch" in err
     assert not mock_youtube.videos().insert.called
+
+
+def test_max_uploads_per_day_enforced(mock_youtube, mock_db, sample_config):
+    """Enforces max_uploads_per_day limit based on the Pacific-time day."""
+    sample_config["upload"]["max_uploads_per_day"] = 2
+    uploader = YouTubeUploader(mock_youtube, config=sample_config, db=mock_db)
+
+    p_date = mock_db.get_pacific_date()
+
+    # Pre-record 2 uploads completed today (Pacific time)
+    mock_db.record_attempt(
+        post_id="up1",
+        target_date="2026-11-20",
+        slot_time="2026-11-20T12:00:00-05:00",
+        status="uploaded",
+        video_id="yt_1",
+        pacific_date=p_date,
+    )
+    mock_db.record_attempt(
+        post_id="up2",
+        target_date="2026-11-20",
+        slot_time="2026-11-20T14:00:00-05:00",
+        status="uploaded",
+        video_id="yt_2",
+        pacific_date=p_date,
+    )
+    assert mock_db.get_pacific_uploads_count(p_date) == 2
+
+    # Attempt to upload 3rd video
+    slot = {
+        "post_id": "up3",
+        "slot_time": (datetime.now(timezone.utc) + timedelta(hours=5)).isoformat(),
+    }
+
+    status, video_id, err = uploader.upload_slot(slot, target_date="2026-11-20")
+
+    assert status == "pending"
+    assert "Daily upload limit reached for Pacific day" in err
+    assert not mock_youtube.videos().insert.called
+

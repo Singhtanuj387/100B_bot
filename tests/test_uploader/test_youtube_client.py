@@ -42,18 +42,24 @@ def sample_config():
     }
 
 
-def test_quota_tracker():
+def test_quota_tracker(mock_db):
     config = {"quota": {"daily_cap": 3200, "insert_cost": 1600, "list_cost": 1}}
-    tracker = QuotaTracker(config)
+    tracker1 = QuotaTracker(config, db=mock_db)
 
-    assert tracker.can_insert() is True
-    tracker.record_insert()
-    assert tracker.used_today == 1600
-    assert tracker.can_insert() is True
+    assert tracker1.can_insert() is True
+    tracker1.record_insert()
+    assert tracker1.used_today == 1600
+    assert tracker1.can_insert() is True
 
-    tracker.record_insert()
-    assert tracker.used_today == 3200
-    assert tracker.can_insert() is False  # Limit reached
+    tracker1.record_insert()
+    assert tracker1.used_today == 3200
+    assert tracker1.can_insert() is False  # Limit reached
+
+    # Verify persistence: A new tracker session loads existing usage from DB instead of resetting to 0
+    tracker2 = QuotaTracker(config, db=mock_db)
+    assert tracker2.used_today == 3200
+    assert tracker2.inserts_today == 2
+    assert tracker2.can_insert() is False
 
 
 def test_timezone_conversion_to_utc():

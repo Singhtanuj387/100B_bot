@@ -83,7 +83,7 @@ class UploadDatabase:
         return conn
 
     def _init_db(self):
-        """Create uploads table if it does not already exist."""
+        """Create uploads and daily_quota tables if they do not already exist."""
         with self._get_connection() as conn:
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS uploads (
@@ -96,12 +96,93 @@ class UploadDatabase:
                     last_error TEXT,
                     uploaded_at TEXT,
                     privacy TEXT,
-                    publish_at TEXT
+                    publish_at TEXT,
+                    pacific_date TEXT
                 );
             """)
             conn.execute("CREATE INDEX IF NOT EXISTS idx_uploads_date ON uploads(target_date);")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_uploads_status ON uploads(status);")
+
+            # Migration for existing databases without pacific_date column
+            try:
+                conn.execute("ALTER TABLE uploads ADD COLUMN pacific_date TEXT;")
+            except sqlite3.OperationalError:
+                pass
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_uploads_pacific_date ON uploads(pacific_date);")
+
+            # Persistent daily quota table tracked by Pacific-time day
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS daily_quota (
+                    pacific_date TEXT PRIMARY KEY,
+                    inserts_count INTEGER DEFAULT 0,
+                    reads_count INTEGER DEFAULT 0,
+                    quota_used INTEGER DEFAULT 0,
+                    updated_at TEXT
+                );
+            """)
+
+            # Backfill existing uploaded rows missing pacific_date
+            rows = conn.execute("SELECT post_id, uploaded_at FROM uploads WHERE pacific_date IS NULL AND uploaded_at IS NOT NULL;").fetchall()
+            for r in rows:
+                try:
+                    dt = datetime.fromisoformat(r["uploaded_at"])
+                    from zoneinfo import ZoneInfo
+                    p_str = dt.astimezone(ZoneInfo("America/Los_Angeles")).strftime("%Y-%m-%d")
+                    conn.execute("UPDATE uploads SET pacific_date = ? WHERE post_id = ?;", (p_str, r["post_id"]))
+                except Exception:
+                    pass
             conn.commit()
+
+    @staticmethod
+    def get_pacific_date() -> str:
+        """Return current date formatted as YYYY-MM-DD in America/Los_Angeles (Pacific Time)."""
+        from zoneinfo import ZoneInfo
+        return datetime.now(ZoneInfo("America/Los_Angeles")).strftime("%Y-%m-%d")
+
+    def get_daily_quota(self, pacific_date: str) -> Dict[str, int]:
+        """Fetch persistent quota usage for a given Pacific-time date."""
+        with self._get_connection() as conn:
+            row = conn.execute(
+                "SELECT inserts_count, reads_count, quota_used FROM daily_quota WHERE pacific_date = ?",
+                (pacific_date,)
+            ).fetchone()
+            if row:
+                return {
+                    "inserts_count": int(row["inserts_count"]),
+                    "reads_count": int(row["reads_count"]),
+                    "quota_used": int(row["quota_used"]),
+                }
+            return {"inserts_count": 0, "reads_count": 0, "quota_used": 0}
+
+    def record_quota_usage(
+        self,
+        pacific_date: str,
+        insert_delta: int = 0,
+        read_delta: int = 0,
+        cost_delta: int = 0,
+    ):
+        """Atomically record quota usage into daily_quota table."""
+        now = datetime.now().isoformat()
+        with self._get_connection() as conn:
+            conn.execute("""
+                INSERT INTO daily_quota (pacific_date, inserts_count, reads_count, quota_used, updated_at)
+                VALUES (?, ?, ?, ?, ?)
+                ON CONFLICT(pacific_date) DO UPDATE SET
+                    inserts_count = daily_quota.inserts_count + excluded.inserts_count,
+                    reads_count = daily_quota.reads_count + excluded.reads_count,
+                    quota_used = daily_quota.quota_used + excluded.quota_used,
+                    updated_at = excluded.updated_at;
+            """, (pacific_date, insert_delta, read_delta, cost_delta, now))
+            conn.commit()
+
+    def get_pacific_uploads_count(self, pacific_date: str) -> int:
+        """Count how many videos were successfully uploaded/scheduled on a specific Pacific-time date."""
+        with self._get_connection() as conn:
+            row = conn.execute(
+                "SELECT COUNT(*) as cnt FROM uploads WHERE pacific_date = ? AND status IN ('uploaded', 'scheduled')",
+                (pacific_date,)
+            ).fetchone()
+            return int(row["cnt"]) if row else 0
 
     def get_upload(self, post_id: str) -> Optional[Dict[str, Any]]:
         """Fetch upload record for a post_id."""
@@ -119,14 +200,16 @@ class UploadDatabase:
         privacy: Optional[str] = None,
         publish_at: Optional[str] = None,
         error: Optional[str] = None,
+        pacific_date: Optional[str] = None,
     ):
         """Insert or update upload record when an attempt begins or finishes."""
         now = datetime.now().isoformat()
+        p_date = pacific_date or self.get_pacific_date()
         with self._get_connection() as conn:
             conn.execute("""
                 INSERT INTO uploads (
-                    post_id, target_date, slot_time, status, video_id, attempts, last_error, uploaded_at, privacy, publish_at
-                ) VALUES (?, ?, ?, ?, ?, 1, ?, ?, ?, ?)
+                    post_id, target_date, slot_time, status, video_id, attempts, last_error, uploaded_at, privacy, publish_at, pacific_date
+                ) VALUES (?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?)
                 ON CONFLICT(post_id) DO UPDATE SET
                     status = excluded.status,
                     video_id = COALESCE(excluded.video_id, uploads.video_id),
@@ -134,8 +217,9 @@ class UploadDatabase:
                     last_error = excluded.last_error,
                     uploaded_at = COALESCE(excluded.uploaded_at, uploads.uploaded_at),
                     privacy = COALESCE(excluded.privacy, uploads.privacy),
-                    publish_at = COALESCE(excluded.publish_at, uploads.publish_at);
-            """, (post_id, target_date, slot_time, status, video_id, error, now if status in ("uploaded", "scheduled") else None, privacy, publish_at))
+                    publish_at = COALESCE(excluded.publish_at, uploads.publish_at),
+                    pacific_date = COALESCE(excluded.pacific_date, uploads.pacific_date);
+            """, (post_id, target_date, slot_time, status, video_id, error, now if status in ("uploaded", "scheduled") else None, privacy, publish_at, p_date if status in ("uploaded", "scheduled") else None))
             conn.commit()
 
     def update_status(
@@ -145,9 +229,11 @@ class UploadDatabase:
         video_id: Optional[str] = None,
         error: Optional[str] = None,
         privacy: Optional[str] = None,
+        pacific_date: Optional[str] = None,
     ):
         """Update status and metadata of an existing upload."""
         now = datetime.now().isoformat()
+        p_date = pacific_date or self.get_pacific_date()
         with self._get_connection() as conn:
             conn.execute("""
                 UPDATE uploads
@@ -155,9 +241,10 @@ class UploadDatabase:
                     video_id = COALESCE(?, video_id),
                     last_error = ?,
                     uploaded_at = CASE WHEN ? IN ('uploaded', 'scheduled') THEN ? ELSE uploaded_at END,
-                    privacy = COALESCE(?, privacy)
+                    privacy = COALESCE(?, privacy),
+                    pacific_date = CASE WHEN ? IN ('uploaded', 'scheduled') THEN ? ELSE pacific_date END
                 WHERE post_id = ?;
-            """, (status, video_id, error, status, now, privacy, post_id))
+            """, (status, video_id, error, status, now, privacy, status, p_date, post_id))
             conn.commit()
 
     def get_uploads_by_date(self, target_date: str) -> List[Dict[str, Any]]:

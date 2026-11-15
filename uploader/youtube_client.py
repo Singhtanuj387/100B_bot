@@ -20,31 +20,74 @@ DEFAULT_CONFIG_PATH = Path(__file__).resolve().parent / "config.yaml"
 
 
 class QuotaTracker:
-    """Tracks daily YouTube Data API v3 quota consumption."""
+    """Tracks daily YouTube Data API v3 quota consumption persisted in SQLite by Pacific date."""
 
-    def __init__(self, config: Dict[str, Any]):
+    def __init__(self, config: Dict[str, Any], db: Optional[UploadDatabase] = None):
         quota_cfg = config.get("quota", {})
         self.daily_cap = int(quota_cfg.get("daily_cap", 10000))
         self.insert_cost = int(quota_cfg.get("insert_cost", 1600))
         self.list_cost = int(quota_cfg.get("list_cost", 1))
+        self.db = db
+        self.pacific_date = self.get_current_pacific_date()
+
         self.used_today = 0
         self.inserts_today = 0
         self.reads_today = 0
+        if self.db:
+            q_data = self.db.get_daily_quota(self.pacific_date)
+            self.used_today = q_data.get("quota_used", 0)
+            self.inserts_today = q_data.get("inserts_count", 0)
+            self.reads_today = q_data.get("reads_count", 0)
+
+    @staticmethod
+    def get_current_pacific_date() -> str:
+        from zoneinfo import ZoneInfo
+        return datetime.now(ZoneInfo("America/Los_Angeles")).strftime("%Y-%m-%d")
+
+    def _sync_pacific_date(self):
+        cur_p_date = self.get_current_pacific_date()
+        if cur_p_date != self.pacific_date:
+            self.pacific_date = cur_p_date
+            self.used_today = 0
+            self.inserts_today = 0
+            self.reads_today = 0
+            if self.db:
+                q_data = self.db.get_daily_quota(self.pacific_date)
+                self.used_today = q_data.get("quota_used", 0)
+                self.inserts_today = q_data.get("inserts_count", 0)
+                self.reads_today = q_data.get("reads_count", 0)
 
     def record_insert(self):
+        self._sync_pacific_date()
         self.used_today += self.insert_cost
         self.inserts_today += 1
+        if self.db:
+            self.db.record_quota_usage(
+                self.pacific_date,
+                insert_delta=1,
+                read_delta=0,
+                cost_delta=self.insert_cost,
+            )
         logger.info(
-            f"Quota Update: +{self.insert_cost} units (videos.insert #{self.inserts_today}). "
+            f"Quota Update: +{self.insert_cost} units (videos.insert #{self.inserts_today} on {self.pacific_date} PT). "
             f"Total used today: {self.used_today}/{self.daily_cap} units."
         )
 
     def record_read(self):
+        self._sync_pacific_date()
         self.used_today += self.list_cost
         self.reads_today += 1
+        if self.db:
+            self.db.record_quota_usage(
+                self.pacific_date,
+                insert_delta=0,
+                read_delta=1,
+                cost_delta=self.list_cost,
+            )
         logger.debug(f"Quota Update: +{self.list_cost} units (read #{self.reads_today}). Total: {self.used_today}")
 
     def can_insert(self) -> bool:
+        self._sync_pacific_date()
         return (self.used_today + self.insert_cost) <= self.daily_cap
 
 
@@ -63,7 +106,7 @@ class YouTubeUploader:
         self.youtube = youtube_service
         self.config = config or self._load_config()
         self.db = db or UploadDatabase()
-        self.quota = QuotaTracker(self.config)
+        self.quota = QuotaTracker(self.config, db=self.db)
         self.channel_uploads_playlist_id: Optional[str] = None
 
     @staticmethod
@@ -210,7 +253,42 @@ class YouTubeUploader:
                     update_schedule_slot(schedule_path, post_id, {"status": "failed", "error": reason})
                 return "failed", None, reason
 
-        # 4. Pre-Upload Validation
+        # 4. Check Daily Max Uploads Limit (Pacific-time day)
+        upload_cfg = self.config.get("upload", {})
+        max_uploads_per_day = int(upload_cfg.get("max_uploads_per_day", 6))
+        pacific_date = self.quota.get_current_pacific_date()
+        uploads_today_pt = self.db.get_pacific_uploads_count(pacific_date)
+
+        if uploads_today_pt >= max_uploads_per_day:
+            reason = (
+                f"Daily upload limit reached for Pacific day {pacific_date} "
+                f"({uploads_today_pt}/{max_uploads_per_day} uploads). Postponing remaining slots."
+            )
+            logger.warning(reason)
+            self.db.record_attempt(post_id, target_date, slot_time_str, "pending", error=reason)
+            if schedule_path:
+                update_schedule_slot(schedule_path, post_id, {"status": "pending", "error": reason})
+            send_telegram_alert("DAILY_UPLOAD_LIMIT_REACHED", reason, {
+                "pacific_date": pacific_date,
+                "uploads_today": uploads_today_pt,
+                "max_uploads": max_uploads_per_day,
+            })
+            return "pending", None, reason
+
+        # 5. Check Daily Quota Cap
+        if not self.quota.can_insert():
+            reason = f"Daily YouTube upload quota limit reached ({self.quota.used_today}/{self.quota.daily_cap})"
+            logger.warning(reason)
+            self.db.record_attempt(post_id, target_date, slot_time_str, "pending", error=reason)
+            if schedule_path:
+                update_schedule_slot(schedule_path, post_id, {"status": "pending", "error": reason})
+            send_telegram_alert("QUOTA_EXCEEDED", reason, {
+                "used_today": self.quota.used_today,
+                "daily_cap": self.quota.daily_cap,
+            })
+            return "pending", None, reason
+
+        # 6. Pre-Upload Validation
         video_path = Path(raw_video_path)
         valid, val_reason, norm_data = validate_video_and_metadata(
             video_path=video_path,
@@ -225,10 +303,9 @@ class YouTubeUploader:
                 update_schedule_slot(schedule_path, post_id, {"status": "failed", "error": val_reason})
             return "failed", None, val_reason
 
-        # 5. Determine Privacy and publishAt
+        # 7. Determine Privacy and publishAt
         # When first_run_private is true or --confirm-public is missing: upload private without publishAt.
         # Scheduled mode sets publishAt only with --confirm-public or upload.go_live: true.
-        upload_cfg = self.config.get("upload", {})
         first_run_private = upload_cfg.get("first_run_private", True)
         go_live = upload_cfg.get("go_live", False)
 
@@ -253,14 +330,7 @@ class YouTubeUploader:
                 privacy_status = "private"
             final_status = "uploaded"
 
-        # 6. Check Daily Quota Cap
-        if not self.quota.can_insert():
-            reason = f"Daily YouTube upload quota limit reached ({self.quota.used_today}/{self.quota.daily_cap})"
-            logger.warning(reason)
-            self.db.record_attempt(post_id, target_date, slot_time_str, "pending", error=reason)
-            return "pending", None, reason
-
-        # 7. Dry-Run Handling
+        # 8. Dry-Run Handling
         if dry_run:
             logger.info(
                 f"[DRY-RUN] Would upload {post_id} to YouTube: Title='{norm_data['title']}' | "
@@ -268,7 +338,7 @@ class YouTubeUploader:
             )
             return "scheduled" if publish_at_rfc3339 else "uploaded", f"dry_run_{post_id}", None
 
-        # 8. Build Request Body
+        # 9. Build Request Body
         body: Dict[str, Any] = {
             "snippet": {
                 "title": norm_data["title"],
@@ -377,6 +447,7 @@ class YouTubeUploader:
             status=final_status,
             video_id=video_id,
             privacy=privacy_status,
+            pacific_date=pacific_date,
         )
         if schedule_path:
             update_schedule_slot(

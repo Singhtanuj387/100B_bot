@@ -290,12 +290,26 @@ def cmd_verify(args):
 
 
 def cmd_status(args):
-    """Display rich status table of recent uploads."""
+    """Display rich status table of recent uploads and daily quota."""
     days = getattr(args, "days", 7)
     db = UploadDatabase()
     rows = db.get_recent_uploads(days=days)
+    config = load_uploader_config()
+
+    p_date = db.get_pacific_date()
+    q_data = db.get_daily_quota(p_date)
+    p_uploads = db.get_pacific_uploads_count(p_date)
+    max_uploads = config.get("upload", {}).get("max_uploads_per_day", 6)
+    daily_cap = config.get("quota", {}).get("daily_cap", 10000)
 
     console = Console()
+    console.print(
+        f"\n[bold]Pacific Date (PT):[/bold] [yellow]{p_date}[/yellow] | "
+        f"[bold]Uploads Today:[/bold] [cyan]{p_uploads} / {max_uploads}[/cyan] | "
+        f"[bold]Quota Used Today:[/bold] [magenta]{q_data.get('quota_used', 0):,} / {daily_cap:,} units[/magenta] "
+        f"([dim]{q_data.get('inserts_count', 0)} inserts, {q_data.get('reads_count', 0)} reads[/dim])"
+    )
+
     table = Table(title=f"YouTube Uploads — Last {days} Days", show_header=True, header_style="bold cyan")
     table.add_column("Slot Time", style="yellow")
     table.add_column("Post ID", style="magenta")
