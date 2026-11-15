@@ -26,7 +26,7 @@ from loguru import logger
 
 from uploader.alerts import send_telegram_alert
 from uploader.cleanup import archive_verified_slot, purge_old_media
-from uploader.db import UploadDatabase
+from uploader.db import UploadDatabase, atomic_write_json
 
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -145,10 +145,18 @@ def main():
 
     # Acquire Master Process Lock
     with DailyLockManager(LOCK_FILE):
-        logger.info(f"=== Starting Daily Bot Run for Date: {args.date} (Dry Run: {args.dry_run}) ===")
+        from upload import resolve_date_arg, load_uploader_config
+        config = load_uploader_config()
+        tz_name = config.get("timezone", "America/New_York")
+        target_date_str = resolve_date_arg(args.date, tz_name)
+        target_count = int(config.get("upload", {}).get("max_uploads_per_day", 6))
+        schedule_path = BASE_DIR / "agent" / "data" / "edited" / target_date_str / "schedule.json"
+
+        logger.info(f"=== Starting Daily Bot Run for Date: {target_date_str} (Target: {target_count} clips | Dry Run: {args.dry_run}) ===")
 
         # Step 1: Curation
         curation_ok = True
+        curated_count = 0
         if not args.skip_curation:
             curate_cmd = [
                 sys.executable,
@@ -161,11 +169,36 @@ def main():
                 curate_cmd.append("--dry-run")
 
             curation_ok = run_step("Video Curation (LangGraph)", curate_cmd, timeout_s=3600)
-            if not curation_ok:
-                msg = f"Daily curation step failed for date: {args.date}."
-                logger.error(msg)
-                send_telegram_alert("CURATION_FAILED", msg)
-                sys.exit(2)
+
+        # Inspect curation outcome from schedule.json
+        if schedule_path.is_file():
+            try:
+                with open(schedule_path, "r", encoding="utf-8") as f:
+                    sched = json.load(f)
+                curated_count = len(sched.get("slots", []))
+            except Exception as e:
+                logger.warning(f"Could not read schedule.json at {schedule_path}: {e}")
+                curated_count = 0
+        else:
+            curated_count = 0
+
+        logger.info(f"Curation summary for {target_date_str}: {curated_count}/{target_count} slots curated.")
+
+        # Fail fast if curation yielded 0 clips or curation subprocess crashed
+        if not args.skip_curation and (not curation_ok or curated_count == 0):
+            msg = (
+                f"Daily pipeline FAILED for date {target_date_str}: "
+                f"Curation produced {curated_count}/{target_count} approved clips. "
+                "No schedule generated; upload aborted."
+            )
+            logger.error(msg)
+            send_telegram_alert("DAILY_RUN_FAILED", msg, {
+                "target_date": target_date_str,
+                "curated_count": curated_count,
+                "target_count": target_count,
+                "curation_ok": curation_ok,
+            })
+            sys.exit(1)
 
         # Step 2: Upload
         upload_ok = True
@@ -184,7 +217,7 @@ def main():
             upload_ok = run_step("YouTube Upload Batch", upload_cmd, timeout_s=1800)
 
             # Step 3: Verification
-            if not args.dry_run:
+            if upload_ok and not args.dry_run:
                 verify_cmd = [
                     sys.executable,
                     str(BASE_DIR / "upload.py"),
@@ -196,11 +229,6 @@ def main():
         # Step 4: Cleanup & Archival
         logger.info("\n--- [STEP] Media Archival & Retention Purge ---")
         try:
-            # Move uploaded videos to data/published/
-            from upload import resolve_date_arg
-            target_date_str = resolve_date_arg(args.date)
-            schedule_path = BASE_DIR / "agent" / "data" / "edited" / target_date_str / "schedule.json"
-
             if schedule_path.is_file():
                 with open(schedule_path, "r", encoding="utf-8") as f:
                     sched = json.load(f)
@@ -211,21 +239,64 @@ def main():
                             new_path = archive_verified_slot(Path(v_path), target_date_str, base_dir=BASE_DIR)
                             if new_path:
                                 slot["video_path"] = str(new_path)
+                atomic_write_json(schedule_path, sched)
 
             # Purge media older than 14 days
             purge_old_media(retention_days=14, base_dir=BASE_DIR)
         except Exception as e:
             logger.warning(f"Archival/cleanup step encountered warning: {e}")
 
-        # Step 5: Final Summary Notification
-        logger.success(f"Daily pipeline finished successfully for date: {args.date}!")
+        # Step 5: Evaluate Final Outcome (Success, Partial, or Failed)
+        # Condition A: Upload step failed
+        if not args.skip_upload and not upload_ok:
+            msg = f"Daily pipeline FAILED for date {target_date_str}: Upload step exited with errors."
+            logger.error(msg)
+            send_telegram_alert("DAILY_RUN_FAILED", msg, {
+                "target_date": target_date_str,
+                "curated_count": curated_count,
+                "target_count": target_count,
+                "upload_ok": False,
+            })
+            sys.exit(1)
+
+        # Condition B: Curation gave fewer than target_count (e.g. 6) clips -> "partial"
+        if not args.skip_curation and curated_count < target_count:
+            msg = (
+                f"Daily pipeline finished as PARTIAL for date {target_date_str}: "
+                f"Only {curated_count}/{target_count} clips were curated. "
+                f"Upload completed for the available clips."
+            )
+            logger.warning(msg)
+            send_telegram_alert(
+                "DAILY_RUN_PARTIAL",
+                f"<b>⚠️ Daily 100B Run PARTIAL</b>\n\n"
+                f"<b>Date:</b> <code>{target_date_str}</code>\n"
+                f"<b>Curation:</b> ⚠️ Partial ({curated_count}/{target_count} clips)\n"
+                f"<b>Upload:</b> {'✅ Done' if upload_ok else '❌ Failed'}\n",
+                {
+                    "target_date": target_date_str,
+                    "curated_count": curated_count,
+                    "target_count": target_count,
+                    "status": "partial",
+                }
+            )
+            sys.exit(2)
+
+        # Condition C: Full Success
+        logger.success(f"Daily pipeline finished successfully for date: {target_date_str} ({curated_count}/{target_count} clips)!")
         send_telegram_alert(
             "DAILY_RUN_COMPLETE",
             f"<b>🏆 Daily 100B Run Completed</b>\n\n"
-            f"<b>Date:</b> <code>{args.date}</code>\n"
-            f"<b>Curation:</b> {'✅ Done' if curation_ok else '❌ Failed'}\n"
-            f"<b>Upload:</b> {'✅ Done' if upload_ok else '❌ Skipped/Failed'}\n",
+            f"<b>Date:</b> <code>{target_date_str}</code>\n"
+            f"<b>Curation:</b> ✅ Complete ({curated_count}/{target_count} clips)\n"
+            f"<b>Upload:</b> {'✅ Done' if upload_ok else '❌ Skipped'}\n",
+            {
+                "target_date": target_date_str,
+                "curated_count": curated_count,
+                "status": "success",
+            }
         )
+        sys.exit(0)
 
 
 if __name__ == "__main__":

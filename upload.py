@@ -96,8 +96,8 @@ def cmd_upload(args):
 
     slots = schedule_data.get("slots", [])
     if not slots:
-        logger.warning(f"No slots found in {schedule_path}")
-        return
+        logger.error(f"No slots found in {schedule_path}")
+        sys.exit(1)
 
     db = UploadDatabase()
     service = None if args.dry_run else get_authenticated_service()
@@ -167,6 +167,10 @@ def cmd_upload(args):
         f"Upload finished for {target_date} -> Scheduled: {scheduled_cnt} | "
         f"Uploaded: {uploaded_cnt} | Failed: {failed_cnt} | Quota: {uploader.quota.used_today} units"
     )
+
+    if failed_cnt > 0:
+        logger.error(f"{failed_cnt} slot(s) failed upload for date {target_date}.")
+        sys.exit(1)
 
 
 def cmd_run_due(args):
