@@ -118,6 +118,9 @@ class YouTubeUploader:
 
     def get_uploads_playlist_id(self) -> Optional[str]:
         """Fetch the authenticated user's uploads playlist ID."""
+        if not self.youtube:
+            return None
+
         if self.channel_uploads_playlist_id:
             return self.channel_uploads_playlist_id
 
@@ -468,6 +471,9 @@ class YouTubeUploader:
         Verify post-upload status. If YouTube forced the video to private due to unverified project,
         log a clear warning and send a notification without failing the upload.
         """
+        if not self.youtube:
+            return
+
         try:
             self.quota.record_read()
             resp = self.youtube.videos().list(part="status", id=video_id).execute()
