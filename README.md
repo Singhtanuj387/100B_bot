@@ -276,9 +276,9 @@ Follow this sequence before automating:
 
 3. **Single Private Test Upload**:
    ```bash
-   python upload.py upload --date tomorrow
+   python upload.py upload --date tomorrow --limit 1
    ```
-   * Uploads videos as private drafts (`first_run_private: true` safety net).
+   * Uploads exactly 1 video as a private draft (`first_run_private: true` safety net, `--limit 1`).
 
 4. **Post-Upload Verification**:
    ```bash

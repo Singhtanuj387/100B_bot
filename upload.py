@@ -104,14 +104,27 @@ def cmd_upload(args):
     uploader = YouTubeUploader(youtube_service=service, config=config, db=db)
 
     mode = args.mode or config.get("upload", {}).get("mode", "scheduled")
+    limit = getattr(args, "limit", None)
+    if limit is not None and limit > 0:
+        logger.info(f"Upload limit set: uploading at most {limit} fresh slot(s)")
+
     uploaded_cnt = 0
     scheduled_cnt = 0
     failed_cnt = 0
+    fresh_count = 0
     errors = []
 
     for slot in slots:
         post_id = slot.get("post_id", "unknown")
         slot_time = slot.get("slot_time", "")
+
+        existing_record = db.get_upload(post_id)
+        is_already_done = existing_record and existing_record.get("status") in ("uploaded", "scheduled")
+
+        if not is_already_done and limit is not None and fresh_count >= limit:
+            logger.info(f"Reached upload limit ({limit}); skipping remaining slots.")
+            break
+
         status, video_id, err = uploader.upload_slot(
             slot=slot,
             target_date=target_date,
@@ -120,6 +133,10 @@ def cmd_upload(args):
             mode=mode,
             dry_run=args.dry_run,
         )
+
+        if not is_already_done:
+            fresh_count += 1
+
         if status == "scheduled":
             scheduled_cnt += 1
         elif status == "uploaded":
@@ -128,6 +145,10 @@ def cmd_upload(args):
             if status == "failed":
                 failed_cnt += 1
             errors.append({"post_id": post_id, "slot_time": slot_time, "error": err or status})
+
+        if limit is not None and fresh_count >= limit:
+            logger.info(f"Reached upload limit ({limit}); stopping further uploads.")
+            break
 
     # Summary notification
     send_upload_summary(
@@ -190,7 +211,13 @@ def cmd_run_due(args):
         logger.info(f"No slots due right now for date {today}.")
         return
 
-    logger.info(f"Found {len(due_slots)} due slot(s) for realtime upload...")
+    limit = getattr(args, "limit", None)
+    if limit is not None and limit > 0:
+        due_slots = due_slots[:limit]
+        logger.info(f"Applying limit {limit}: uploading up to {len(due_slots)} due slot(s)...")
+    else:
+        logger.info(f"Found {len(due_slots)} due slot(s) for realtime upload...")
+
     for s in due_slots:
         uploader.upload_slot(
             slot=s,
@@ -375,12 +402,14 @@ def main():
     p_upload.add_argument("--dry-run", action="store_true", help="Simulate upload without calling YouTube API")
     p_upload.add_argument("--confirm-public", action="store_true", help="Confirm publishing publicly or with publishAt schedule")
     p_upload.add_argument("--mode", choices=["scheduled", "realtime"], default=None, help="Upload mode override")
+    p_upload.add_argument("--limit", type=int, default=None, help="Maximum number of fresh slots to upload (e.g. 1)")
     p_upload.set_defaults(func=cmd_upload)
 
     # 3. run-due
     p_due = subparsers.add_parser("run-due", help="Realtime runner: upload slots that are due now")
     p_due.add_argument("--dry-run", action="store_true", help="Simulate upload")
     p_due.add_argument("--confirm-public", action="store_true", help="Confirm publishing publicly")
+    p_due.add_argument("--limit", type=int, default=None, help="Maximum number of slots to upload")
     p_due.set_defaults(func=cmd_run_due)
 
     # 4. verify
@@ -398,6 +427,7 @@ def main():
     p_retry.add_argument("--date", default="tomorrow", help="Target date ('tomorrow' or 'YYYY-MM-DD')")
     p_retry.add_argument("--dry-run", action="store_true", help="Simulate retry")
     p_retry.add_argument("--confirm-public", action="store_true", help="Confirm public")
+    p_retry.add_argument("--limit", type=int, default=None, help="Maximum number of slots to retry")
     p_retry.set_defaults(func=cmd_retry_failed)
 
     args = parser.parse_args()

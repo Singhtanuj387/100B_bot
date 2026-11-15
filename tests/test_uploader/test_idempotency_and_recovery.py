@@ -1,12 +1,15 @@
 """Test suite for upload crash recovery, idempotency, quota exhaustion, and kill switch."""
+import json
 import pytest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 from datetime import datetime, timezone, timedelta
 from googleapiclient.errors import HttpError
 
 from uploader.youtube_client import YouTubeUploader
 from uploader.db import UploadDatabase
+from upload import cmd_upload
 
 
 @pytest.fixture
@@ -191,4 +194,47 @@ def test_max_uploads_per_day_enforced(mock_youtube, mock_db, sample_config):
     assert status == "pending"
     assert "Daily upload limit reached for Pacific day" in err
     assert not mock_youtube.videos().insert.called
+
+
+def test_cmd_upload_limit_flag(tmp_path):
+    """Verifies that --limit N restricts cmd_upload to processing at most N fresh slots."""
+    sched_dir = tmp_path / "agent" / "data" / "edited" / "2026-11-20"
+    sched_dir.mkdir(parents=True, exist_ok=True)
+    sched_file = sched_dir / "schedule.json"
+
+    slots_data = [
+        {"post_id": "slot_1", "slot_time": "2026-11-20T12:00:00-05:00", "title": "T1", "status": "queued"},
+        {"post_id": "slot_2", "slot_time": "2026-11-20T14:00:00-05:00", "title": "T2", "status": "queued"},
+        {"post_id": "slot_3", "slot_time": "2026-11-20T17:00:00-05:00", "title": "T3", "status": "queued"},
+    ]
+    with open(sched_file, "w", encoding="utf-8") as f:
+        json.dump({"target_date": "2026-11-20", "slots": slots_data}, f)
+
+    args = SimpleNamespace(
+        date="2026-11-20",
+        dry_run=True,
+        confirm_public=False,
+        mode="scheduled",
+        limit=1,
+    )
+
+    with patch("upload.BASE_DIR", tmp_path), \
+         patch("upload.UploadDatabase") as mock_db_cls, \
+         patch("upload.YouTubeUploader") as mock_uploader_cls, \
+         patch("upload.send_upload_summary"):
+
+        mock_uploader = MagicMock()
+        mock_uploader.upload_slot.return_value = ("uploaded", "mock_vid_1", None)
+        mock_uploader.quota.used_today = 1
+        mock_uploader_cls.return_value = mock_uploader
+
+        mock_db = MagicMock()
+        mock_db.get_upload.return_value = None
+        mock_db_cls.return_value = mock_db
+
+        cmd_upload(args)
+
+        # upload_slot should only be called once because limit=1
+        assert mock_uploader.upload_slot.call_count == 1
+
 
