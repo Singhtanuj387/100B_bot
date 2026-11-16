@@ -32,14 +32,71 @@ def resolve_date(date_param: str, tz_name: str = "America/New_York") -> str:
         return now.strftime("%Y-%m-%d")
 
 
+def resolve_publish_time(row: Dict[str, Any], live_info: Dict[str, Any]) -> tuple[Optional[datetime], str]:
+    """
+    Resolve the publication or broadcast time (publishAt or slot_time, falling back to uploaded_at).
+    Scheduled batch uploads are pushed to YouTube the evening before, so uploaded_at reflects the
+    batch render/upload time, while publishAt (or slot_time) reflects the actual broadcast time.
+    Returns: (target_datetime_utc, formatted_et_str)
+    """
+    yt_status = live_info.get("status", {})
+    publish_at_str = yt_status.get("publishAt") or row.get("publish_at")
+    slot_time_str = row.get("slot_time")
+    uploaded_at_str = row.get("uploaded_at")
+
+    target_dt: Optional[datetime] = None
+
+    # Priority 1: publishAt (from YouTube API status or database)
+    if publish_at_str:
+        try:
+            dt = datetime.fromisoformat(publish_at_str.replace("Z", "+00:00"))
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            target_dt = dt
+        except Exception:
+            pass
+
+    # Priority 2: slot_time (from schedule / uploads table)
+    if target_dt is None and slot_time_str:
+        try:
+            dt = datetime.fromisoformat(slot_time_str)
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=ZoneInfo("America/New_York"))
+            target_dt = dt.astimezone(timezone.utc)
+        except Exception:
+            pass
+
+    # Priority 3: uploaded_at (fallback for immediate unscheduled uploads)
+    if target_dt is None and uploaded_at_str:
+        try:
+            dt = datetime.fromisoformat(uploaded_at_str)
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            target_dt = dt
+        except Exception:
+            pass
+
+    if target_dt is None:
+        return None, "recently"
+
+    ny_dt = target_dt.astimezone(ZoneInfo("America/New_York"))
+    if ny_dt.minute == 0:
+        time_text = f"{ny_dt.strftime('%I').lstrip('0')} {ny_dt.strftime('%p')} ET"
+    else:
+        time_text = f"{ny_dt.strftime('%I:%M %p').lstrip('0')} ET"
+
+    return target_dt, time_text
+
+
 def determine_clip_status(row: Dict[str, Any], live_info: Dict[str, Any], now_utc: datetime) -> tuple[str, str]:
     """
     Status rules:
       - Published (public, publish time passed)
       - On air (published within the last 60 minutes)
-      - Scheduled (private with a future publishAt)
+      - Scheduled (private with a future publishAt / slot_time)
       - Draft (private, no publishAt)
       - Failed (status='failed' or error)
+    Uses publishAt or slot_time for broadcast timing rather than upload time.
     Returns: (status_label, status_detail_text)
     """
     db_status = (row.get("status") or "").lower()
@@ -48,7 +105,6 @@ def determine_clip_status(row: Dict[str, Any], live_info: Dict[str, Any], now_ut
     if db_status in ("failed", "error") or last_error:
         return "Failed", f"Upload failed: {last_error or 'Unknown error'}"
 
-    # Live status from YouTube API
     yt_status = live_info.get("status", {})
     yt_privacy = yt_status.get("privacyStatus")
     yt_publish_at = yt_status.get("publishAt") or row.get("publish_at")
@@ -57,48 +113,26 @@ def determine_clip_status(row: Dict[str, Any], live_info: Dict[str, Any], now_ut
     views_str = f"{int(yt_stats['viewCount']):,}" if "viewCount" in yt_stats else "—"
     likes_str = f"{int(yt_stats['likeCount']):,}" if "likeCount" in yt_stats else "—"
 
-    # If public on YouTube
-    if yt_privacy == "public" or db_status in ("published", "uploaded") and not yt_publish_at:
-        # Check if published within last 60 minutes
-        uploaded_at_str = row.get("uploaded_at")
+    target_dt, time_text = resolve_publish_time(row, live_info)
+
+    # 1. Scheduled (future publishAt / slot_time)
+    if target_dt and target_dt > now_utc:
+        if yt_privacy == "private" or yt_publish_at or db_status in ("scheduled", "queued", "uploaded"):
+            return "Scheduled", f"Goes live at {time_text}"
+
+    # 2. Published / On air (publish time passed OR public on YouTube)
+    if yt_privacy == "public" or db_status in ("published", "uploaded") or (target_dt and target_dt <= now_utc and db_status != "draft"):
         is_on_air = False
-        time_text = "recently"
-        if uploaded_at_str:
-            try:
-                up_dt = datetime.fromisoformat(uploaded_at_str)
-                if up_dt.tzinfo is None:
-                    up_dt = up_dt.replace(tzinfo=timezone.utc)
-                diff_minutes = (now_utc - up_dt).total_seconds() / 60.0
-                if 0 <= diff_minutes <= 60:
-                    is_on_air = True
-                up_ny = up_dt.astimezone(ZoneInfo("America/New_York"))
-                if up_ny.minute == 0:
-                    time_text = f"{up_ny.strftime('%I').lstrip('0')} {up_ny.strftime('%p')} ET"
-                else:
-                    time_text = f"{up_ny.strftime('%I:%M %p').lstrip('0')} ET"
-            except Exception:
-                pass
+        if target_dt:
+            diff_minutes = (now_utc - target_dt).total_seconds() / 60.0
+            if 0 <= diff_minutes <= 60:
+                is_on_air = True
 
         if is_on_air:
             return "On air", f"On air since {time_text} · {views_str} views"
         return "Published", f"Published {time_text} · {views_str} views · {likes_str} likes"
 
-    # If scheduled (private with future publishAt)
-    if yt_publish_at:
-        try:
-            pub_dt = datetime.fromisoformat(yt_publish_at.replace("Z", "+00:00"))
-            if pub_dt > now_utc:
-                pub_ny_dt = pub_dt.astimezone(ZoneInfo("America/New_York"))
-                if pub_ny_dt.minute == 0:
-                    pub_ny = f"{pub_ny_dt.strftime('%I').lstrip('0')} {pub_ny_dt.strftime('%p')} ET"
-                else:
-                    pub_ny = f"{pub_ny_dt.strftime('%I:%M %p').lstrip('0')} ET"
-                return "Scheduled", f"Goes live at {pub_ny}"
-            else:
-                return "Published", f"Published · {views_str} views · {likes_str} likes"
-        except Exception:
-            return "Scheduled", "Scheduled on YouTube"
-
+    # 3. Draft
     if yt_privacy == "private" or db_status in ("draft", "queued"):
         return "Draft", "Private draft"
 
