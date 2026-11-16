@@ -1,5 +1,6 @@
 import os
 import json
+import shutil
 import sqlite3
 from pathlib import Path
 from datetime import datetime, timezone
@@ -24,6 +25,118 @@ def get_ro_connection() -> sqlite3.Connection:
     conn = sqlite3.connect(uri, uri=True, timeout=15.0)
     conn.row_factory = sqlite3.Row
     return conn
+
+
+def get_rw_connection(timeout: float = 30.0) -> sqlite3.Connection:
+    """Return a controlled read-write SQLite connection with row factory."""
+    db_file = DB_PATH.resolve()
+    conn = sqlite3.connect(str(db_file), timeout=timeout)
+    conn.row_factory = sqlite3.Row
+    return conn
+
+
+def update_local_retimed_data(
+    target_date: str,
+    retimed_items: List[Dict[str, Any]],
+    db_path: Optional[Path] = None,
+    data_dir: Optional[Path] = None,
+) -> Dict[str, int]:
+    """
+    Controlled write of retimed clip times to SQLite (schedule and uploads tables)
+    and schedule.json files after successful YouTube videos.update.
+    """
+    if not retimed_items:
+        return {"db_updated": 0, "json_updated": 0}
+
+    actual_db_path = Path(db_path or DB_PATH).resolve()
+    actual_data_dir = Path(data_dir or (WORKSPACE_DIR / "agent" / "data")).resolve()
+    db_updated = 0
+
+    if actual_db_path.is_file():
+        conn = sqlite3.connect(str(actual_db_path), timeout=30.0)
+        conn.row_factory = sqlite3.Row
+        try:
+            with conn:
+                # Step 1a: Temporarily rename slot_time for affected rows to avoid UNIQUE(target_date, slot_time) collisions
+                for item in retimed_items:
+                    conn.execute(
+                        "UPDATE schedule SET slot_time = ? WHERE target_date = ? AND post_id = ?",
+                        (f"__retime_tmp__{item['post_id']}", target_date, item["post_id"]),
+                    )
+
+                # Step 1b: Apply final slot_time and slot_hour to schedule table
+                for item in retimed_items:
+                    cur = conn.execute(
+                        "UPDATE schedule SET slot_time = ?, slot_hour = ? WHERE target_date = ? AND post_id = ?",
+                        (item["slot_time"], item["slot_hour"], target_date, item["post_id"]),
+                    )
+                    db_updated += cur.rowcount
+
+                # Step 1c: Update uploads table (publish_at and slot_time)
+                for item in retimed_items:
+                    conn.execute(
+                        "UPDATE uploads SET publish_at = ?, slot_time = ? WHERE target_date = ? AND post_id = ?",
+                        (item["publish_at"], item["slot_time"], target_date, item["post_id"]),
+                    )
+        finally:
+            conn.close()
+
+    # 2. Update schedule.json files
+    json_updated = 0
+    candidate_paths = [
+        actual_data_dir / "edited" / target_date / "schedule.json",
+        actual_data_dir / "published" / target_date / "schedule.json",
+        actual_data_dir / target_date / "schedule.json",
+        actual_data_dir / "schedule.json",
+    ]
+
+    retimed_by_post = {item["post_id"]: item for item in retimed_items}
+
+    for json_path in candidate_paths:
+        if not json_path.is_file():
+            continue
+
+        try:
+            # Create a backup copy (.bak) if not already existing
+            bak_file = json_path.with_suffix(".json.bak")
+            if not bak_file.exists():
+                try:
+                    shutil.copy2(json_path, bak_file)
+                except Exception:
+                    pass
+
+            with open(json_path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+
+            slots = data.get("slots", [])
+            modified = False
+            for s in slots:
+                pid = s.get("post_id")
+                if pid in retimed_by_post:
+                    info = retimed_by_post[pid]
+                    s["slot_time"] = info["slot_time"]
+                    s["slot_hour"] = info["slot_hour"]
+                    if "publish_at" in s:
+                        s["publish_at"] = info["publish_at"]
+                    if "publishAt" in s:
+                        s["publishAt"] = info["publish_at"]
+                    modified = True
+
+            if modified:
+                slots.sort(key=lambda x: x.get("slot_time", ""))
+                data["slots"] = slots
+
+                temp_file = json_path.with_name(f"{json_path.name}.tmp.{os.getpid()}")
+                with open(temp_file, "w", encoding="utf-8") as f:
+                    json.dump(data, f, indent=2, ensure_ascii=False)
+                    f.flush()
+                    os.fsync(f.fileno())
+                os.replace(temp_file, json_path)
+                json_updated += 1
+        except Exception:
+            pass
+
+    return {"db_updated": db_updated, "json_updated": json_updated}
 
 
 def get_pipeline_status() -> Dict[str, Any]:

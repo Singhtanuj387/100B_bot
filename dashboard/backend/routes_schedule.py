@@ -11,13 +11,15 @@ from fastapi import APIRouter, Request, HTTPException, status
 from pydantic import BaseModel, Field
 from ruamel.yaml import YAML
 
-from dashboard.backend.db import get_ro_connection, WORKSPACE_DIR
+from dashboard.backend.db import get_ro_connection, WORKSPACE_DIR, update_local_retimed_data
+import dashboard.backend.db as backend_db
 from dashboard.backend.youtube_api import has_manage_scope, update_video_publish_time
 
 router = APIRouter(prefix="/api/schedule", tags=["schedule"])
 
 AGENT_CONFIG_PATH = WORKSPACE_DIR / "agent" / "config.yaml"
 UPLOADER_CONFIG_PATH = WORKSPACE_DIR / "uploader" / "config.yaml"
+SCHEDULE_DATA_DIR = WORKSPACE_DIR / "agent" / "data"
 
 
 class ScheduleUpdateRequest(BaseModel):
@@ -238,19 +240,20 @@ async def update_schedule(request: Request, body: ScheduleUpdateRequest):
 
     can_retime = has_manage_scope()
     retimed_count = 0
+    retimed_items = []
 
     if can_retime:
         # Check if tomorrow has scheduled uploads in database
         with get_ro_connection() as conn:
             try:
                 cur = conn.execute("""
-                    SELECT u.video_id, u.post_id, u.publish_at, s.slot_time
+                    SELECT u.video_id, u.post_id, u.publish_at, COALESCE(s.slot_time, u.slot_time) as slot_time
                     FROM uploads u
-                    JOIN schedule s ON u.post_id = s.post_id AND u.target_date = s.target_date
+                    LEFT JOIN schedule s ON u.post_id = s.post_id AND u.target_date = s.target_date
                     WHERE u.target_date = ? AND u.status = 'scheduled' AND u.video_id IS NOT NULL
-                    ORDER BY s.slot_time ASC
+                    ORDER BY COALESCE(s.slot_time, u.slot_time) ASC
                 """, (tomorrow_str,))
-                scheduled_clips = cur.fetchall()
+                scheduled_clips = [dict(r) for r in cur.fetchall()]
             except Exception:
                 scheduled_clips = []
 
@@ -259,16 +262,36 @@ async def update_schedule(request: Request, body: ScheduleUpdateRequest):
             for idx, clip in enumerate(scheduled_clips):
                 if idx < len(sorted_slots):
                     vid_id = clip["video_id"]
+                    post_id = clip["post_id"]
                     slot_hhmm = sorted_slots[idx]
                     h, m = int(slot_hhmm.split(":")[0]), int(slot_hhmm.split(":")[1])
                     new_dt = tomorrow_dt.replace(hour=h, minute=m, second=0, microsecond=0)
                     # If new time is still in future
                     if new_dt > now_ny:
-                        # RFC 3339 format for YouTube API
-                        new_publish_at_rfc3339 = new_dt.isoformat()
+                        # RFC 3339 format for YouTube API in UTC
+                        new_dt_utc = new_dt.astimezone(timezone.utc)
+                        new_publish_at_rfc3339 = new_dt_utc.strftime("%Y-%m-%dT%H:%M:%SZ")
+                        new_slot_time_iso = new_dt.isoformat()
+
                         success = update_video_publish_time(vid_id, new_publish_at_rfc3339)
                         if success:
                             retimed_count += 1
+                            retimed_items.append({
+                                "post_id": post_id,
+                                "video_id": vid_id,
+                                "slot_hour": h,
+                                "slot_time": new_slot_time_iso,
+                                "publish_at": new_publish_at_rfc3339,
+                            })
+
+            # Controlled write to local DB and schedule.json after successful videos.update
+            if retimed_items:
+                update_local_retimed_data(
+                    target_date=tomorrow_str,
+                    retimed_items=retimed_items,
+                    db_path=backend_db.DB_PATH,
+                    data_dir=SCHEDULE_DATA_DIR,
+                )
 
             notice = f"{tomorrow_day_name}’s {len(scheduled_clips)} clips are already scheduled on YouTube. Saving moves them to the new times."
         else:

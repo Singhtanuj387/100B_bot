@@ -251,6 +251,7 @@ def test_schedule_put_ruamel_roundtrip_comment_preservation(client, tmp_path, mo
 
     monkeypatch.setattr(routes_sched, "AGENT_CONFIG_PATH", agent_cfg)
     monkeypatch.setattr(routes_sched, "UPLOADER_CONFIG_PATH", uploader_cfg)
+    monkeypatch.setattr(routes_sched, "has_manage_scope", lambda: False)
 
     # Valid update
     resp = client.put(
@@ -398,3 +399,136 @@ def test_mock_youtube_retiming(client, test_db_setup, tmp_path, monkeypatch):
     assert call_args["body"]["id"] == "yt_vid_1"
     assert call_args["body"]["status"]["publishAt"] == "2026-11-15T14:30:00Z"
     assert call_args["body"]["status"]["embeddable"] is True
+
+
+def test_put_schedule_retiming_updates_local_data(client, test_db_setup, tmp_path, monkeypatch):
+    """
+    Test that successful YouTube videos.update during PUT /api/schedule
+    updates local SQLite (schedule.slot_time, uploads.publish_at) and schedule.json.
+    """
+    from datetime import datetime, timedelta
+    from zoneinfo import ZoneInfo
+
+    tz = ZoneInfo("America/New_York")
+    now_ny = datetime.now(tz)
+    tomorrow_dt = now_ny + timedelta(days=1)
+    tomorrow_str = tomorrow_dt.strftime("%Y-%m-%d")
+
+    # 1. Setup configs
+    agent_cfg = tmp_path / "agent_config.yaml"
+    uploader_cfg = tmp_path / "uploader_config.yaml"
+    agent_cfg.write_text("timezone: 'America/New_York'\ntarget_count: 2\npeak_hours: ['12:00', '14:00']\n", encoding="utf-8")
+    uploader_cfg.write_text("upload:\n  max_uploads_per_day: 2\n", encoding="utf-8")
+
+    monkeypatch.setattr(routes_sched, "AGENT_CONFIG_PATH", agent_cfg)
+    monkeypatch.setattr(routes_sched, "UPLOADER_CONFIG_PATH", uploader_cfg)
+
+    # 2. Insert test scheduled clips into test_db_setup for tomorrow
+    conn = sqlite3.connect(str(test_db_setup))
+    old_slot_1 = f"{tomorrow_str}T12:00:00-05:00"
+    old_slot_2 = f"{tomorrow_str}T14:00:00-05:00"
+    old_pub_1 = f"{tomorrow_str}T17:00:00Z"
+    old_pub_2 = f"{tomorrow_str}T19:00:00Z"
+
+    conn.execute("""
+        INSERT OR REPLACE INTO schedule (target_date, slot_hour, slot_time, post_id, video_path, title, uploader, status, created_at)
+        VALUES (?, 12, ?, 'retime_clip1', 'clip1.mp4', 'Clip 1', 'up1', 'scheduled', '2026-11-14T18:00:00');
+    """, (tomorrow_str, old_slot_1))
+    conn.execute("""
+        INSERT OR REPLACE INTO schedule (target_date, slot_hour, slot_time, post_id, video_path, title, uploader, status, created_at)
+        VALUES (?, 14, ?, 'retime_clip2', 'clip2.mp4', 'Clip 2', 'up2', 'scheduled', '2026-11-14T18:00:00');
+    """, (tomorrow_str, old_slot_2))
+
+    conn.execute("""
+        INSERT OR REPLACE INTO uploads (post_id, target_date, slot_time, status, video_id, uploaded_at, privacy, publish_at)
+        VALUES ('retime_clip1', ?, ?, 'scheduled', 'vid_retime_1', '2026-11-14T18:01:00', 'private', ?);
+    """, (tomorrow_str, old_slot_1, old_pub_1))
+    conn.execute("""
+        INSERT OR REPLACE INTO uploads (post_id, target_date, slot_time, status, video_id, uploaded_at, privacy, publish_at)
+        VALUES ('retime_clip2', ?, ?, 'scheduled', 'vid_retime_2', '2026-11-14T18:01:00', 'private', ?);
+    """, (tomorrow_str, old_slot_2, old_pub_2))
+    conn.commit()
+    conn.close()
+
+    # 3. Create schedule.json for tomorrow
+    data_dir = tmp_path / "data"
+    edited_dir = data_dir / "edited" / tomorrow_str
+    edited_dir.mkdir(parents=True, exist_ok=True)
+    sched_json_path = edited_dir / "schedule.json"
+    sched_json_content = {
+        "target_date": tomorrow_str,
+        "slots": [
+            {
+                "slot_hour": 12,
+                "slot_time": old_slot_1,
+                "post_id": "retime_clip1",
+                "publish_at": old_pub_1,
+            },
+            {
+                "slot_hour": 14,
+                "slot_time": old_slot_2,
+                "post_id": "retime_clip2",
+                "publish_at": old_pub_2,
+            },
+        ]
+    }
+    sched_json_path.write_text(json.dumps(sched_json_content, indent=2), encoding="utf-8")
+
+    monkeypatch.setattr(routes_sched, "SCHEDULE_DATA_DIR", data_dir)
+    monkeypatch.setattr(routes_sched, "has_manage_scope", lambda: True)
+
+    # 4. Mock update_video_publish_time
+    mock_retime = MagicMock(return_value=True)
+    monkeypatch.setattr(routes_sched, "update_video_publish_time", mock_retime)
+
+    # 5. Execute PUT /api/schedule with new slots: 13:00 and 17:30
+    resp = client.put(
+        "/api/schedule",
+        json={"videos_per_day": 2, "slots": ["13:00", "17:30"]},
+        headers={"Content-Type": "application/json", "X-Dashboard-Request": "1"},
+    )
+    assert resp.status_code == 200
+    res_data = resp.json()
+    assert res_data["status"] == "success"
+    assert res_data["retimed_count"] == 2
+    assert mock_retime.call_count == 2
+
+    # 6. Verify SQLite schedule table was updated
+    conn = sqlite3.connect(str(test_db_setup))
+    rows_sched = {
+        r[0]: (r[1], r[2])
+        for r in conn.execute(
+            "SELECT post_id, slot_time, slot_hour FROM schedule WHERE target_date = ?",
+            (tomorrow_str,)
+        ).fetchall()
+    }
+    expected_slot_1 = f"{tomorrow_str}T13:00:00-05:00"
+    expected_slot_2 = f"{tomorrow_str}T17:30:00-05:00"
+    assert rows_sched["retime_clip1"] == (expected_slot_1, 13)
+    assert rows_sched["retime_clip2"] == (expected_slot_2, 17)
+
+    # 7. Verify SQLite uploads table was updated
+    rows_uploads = {
+        r[0]: (r[1], r[2])
+        for r in conn.execute(
+            "SELECT post_id, slot_time, publish_at FROM uploads WHERE target_date = ?",
+            (tomorrow_str,)
+        ).fetchall()
+    }
+    # 13:00 -05:00 is 18:00 UTC, 17:30 -05:00 is 22:30 UTC
+    expected_pub_1 = f"{tomorrow_str}T18:00:00Z"
+    expected_pub_2 = f"{tomorrow_str}T22:30:00Z"
+    assert rows_uploads["retime_clip1"] == (expected_slot_1, expected_pub_1)
+    assert rows_uploads["retime_clip2"] == (expected_slot_2, expected_pub_2)
+    conn.close()
+
+    # 8. Verify schedule.json was updated
+    updated_json = json.loads(sched_json_path.read_text(encoding="utf-8"))
+    json_slots = {s["post_id"]: s for s in updated_json["slots"]}
+    assert json_slots["retime_clip1"]["slot_time"] == expected_slot_1
+    assert json_slots["retime_clip1"]["slot_hour"] == 13
+    assert json_slots["retime_clip1"]["publish_at"] == expected_pub_1
+
+    assert json_slots["retime_clip2"]["slot_time"] == expected_slot_2
+    assert json_slots["retime_clip2"]["slot_hour"] == 17
+    assert json_slots["retime_clip2"]["publish_at"] == expected_pub_2
