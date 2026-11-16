@@ -178,6 +178,8 @@ def test_agent_day_detail(client, test_db_setup):
     assert "reasons" in data
     assert len(data["lineup"]) == 1
     assert data["lineup"][0]["post_id"] == "clip1"
+    # Missing score should return null (None), not a made-up 8.0
+    assert data["lineup"][0]["hybrid_score"] is None
 
 
 def test_schedule_get(client, test_db_setup):
@@ -355,9 +357,29 @@ def test_http_range_video_streaming(client, tmp_path, monkeypatch):
     assert resp_range2.headers["Content-Range"] == "bytes 50-99/100"
     assert resp_range2.content == data_bytes[50:100]
 
-    # 4. Invalid post_id -> 404
+    # 4. Range request with end past file size: bytes 50-200 -> clamped to 50-99
+    resp_range3 = client.get("/api/video/stream_clip/stream", headers={"Range": "bytes=50-200"})
+    assert resp_range3.status_code == 206
+    assert resp_range3.headers["Content-Range"] == "bytes 50-99/100"
+    assert resp_range3.headers["Content-Length"] == "50"
+    assert resp_range3.content == data_bytes[50:100]
+
+    # 5. Invalid post_id -> 404
     resp_404 = client.get("/api/video/nonexistent/stream")
     assert resp_404.status_code == 404
+
+
+def test_thumbnail_missing_returns_placeholder(client, monkeypatch, tmp_path):
+    # Missing thumbnail returns placeholder with 200 OK (no 404 console errors)
+    monkeypatch.setattr(routes_yt, "get_or_generate_thumbnail", lambda post_id: None)
+    dummy_placeholder = tmp_path / "placeholder.jpg"
+    dummy_placeholder.write_bytes(b"\xff\xd8\xff\xd9")
+    monkeypatch.setattr(routes_yt, "get_placeholder_thumbnail", lambda: dummy_placeholder)
+
+    resp = client.get("/api/thumbs/missing_clip_123.jpg")
+    assert resp.status_code == 200
+    assert resp.headers["Content-Type"] == "image/jpeg"
+    assert resp.content == b"\xff\xd8\xff\xd9"
 
 
 def test_mock_youtube_retiming(client, test_db_setup, tmp_path, monkeypatch):

@@ -3,6 +3,7 @@ import { ExternalLink, Play, RefreshCw, Calendar as CalendarIcon, AlertCircle, E
 import { Thumb } from '../components/Thumb';
 import { StatusPill } from '../components/StatusPill';
 import { formatTimeET } from '../utils/timeFormat';
+import { stripHashtags } from '../utils/textFormat';
 
 export interface YouTubeClipItem {
   post_id: string;
@@ -262,7 +263,7 @@ export const YouTubeView: React.FC<YouTubeViewProps> = ({
                       <div className="w-[42px] shrink-0">
                         <Thumb
                           src={clip.thumb_url}
-                          alt={clip.title}
+                          alt={stripHashtags(clip.title)}
                           className="w-full aspect-[9/16] rounded-[6px]"
                         />
                       </div>
@@ -270,7 +271,7 @@ export const YouTubeView: React.FC<YouTubeViewProps> = ({
                       {/* Title & Uploader */}
                       <div className="flex-1 min-w-0">
                         <p className="font-ui font-semibold text-[14px] text-[#1D3B33] truncate">
-                          {clip.title}
+                          {stripHashtags(clip.title)}
                         </p>
                         <p className="font-ui text-[12px] text-[#6F7A73] truncate mt-[1px]">
                           by {clip.uploader}
@@ -319,7 +320,7 @@ export const YouTubeView: React.FC<YouTubeViewProps> = ({
                       <StatusPill status={selectedClip.status} />
                     </div>
                     <h3 className="font-heading font-extrabold text-[18px] text-[#1D3B33] mt-[6px] line-clamp-2 leading-tight">
-                      {selectedClip.title}
+                      {stripHashtags(selectedClip.title)}
                     </h3>
                     <p className="font-ui text-[12.5px] text-[#6F7A73] mt-[4px]">
                       Uploader credit: <span className="font-medium text-[#1D3B33]">{selectedClip.uploader}</span>
@@ -332,7 +333,7 @@ export const YouTubeView: React.FC<YouTubeViewProps> = ({
                   {/* If public on YouTube and embed didn't fail */}
                   {selectedClip.video_id && (selectedClip.status === 'Published' || selectedClip.status === 'On air') && !embedFailed ? (
                     <iframe
-                      title={selectedClip.title}
+                      title={stripHashtags(selectedClip.title)}
                       src={`https://www.youtube.com/embed/${selectedClip.video_id}?autoplay=0&rel=0`}
                       className="w-full h-full border-0"
                       allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"

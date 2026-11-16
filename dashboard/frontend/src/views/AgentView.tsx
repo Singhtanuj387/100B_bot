@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { ScoreChip } from '../components/ScoreChip';
 import { Thumb } from '../components/Thumb';
 import { formatTimeET, formatDateET } from '../utils/timeFormat';
+import { stripHashtags } from '../utils/textFormat';
 
 interface DaySummary {
   date: string;
@@ -399,10 +400,10 @@ export const AgentView: React.FC<AgentViewProps> = ({ onSelectClipForYouTube }) 
                     <span className="font-heading font-medium text-[15px] text-[#1D3B33] w-[86px] shrink-0">
                       {timeDisp}
                     </span>
-                    <Thumb src={item.thumb_url} alt={item.title} />
+                    <Thumb src={item.thumb_url} alt={stripHashtags(item.title)} />
                     <div className="flex-1 min-w-0 flex flex-col gap-[2px]">
                       <span className="font-ui font-semibold text-[15px] text-[#1D3B33] truncate group-hover:text-[#2E7D4F] transition-colors">
-                        {item.title}
+                        {stripHashtags(item.title)}
                       </span>
                       <span className="font-ui text-[13px] text-[#6F7A73] truncate">
                         {item.source_url ? `r/${item.source_url.split('/')[4] || 'funny'}` : 'r/Unexpected'} · u/{item.uploader}
@@ -433,25 +434,28 @@ export const AgentView: React.FC<AgentViewProps> = ({ onSelectClipForYouTube }) 
               </div>
               <div className="bg-white border border-[#D5DBD5] rounded-[8px] px-[8px] py-[3px]">
                 <span className="font-heading font-semibold text-[13px] text-[#1D3B33]">
-                  {detail?.reserve.length || 6} clips
+                  {detail?.reserve?.length || 0} clips
                 </span>
               </div>
             </div>
 
             {/* Reserve Thumbnails Carousel/Row */}
             <div className="flex gap-[10px] items-center overflow-x-auto py-[4px] no-scrollbar">
-              {(detail?.reserve && detail.reserve.length > 0
-                ? detail.reserve
-                : Array.from({ length: 6 }).map((_, i) => ({ post_id: `res_${i}`, title: `Reserve ${i}` }))
-              ).map((res) => (
-                <Thumb
-                  key={res.post_id}
-                  src={`/api/thumbs/${res.post_id}.jpg`}
-                  alt={res.title}
-                  width={40}
-                  height={70}
-                />
-              ))}
+              {detail?.reserve && detail.reserve.length > 0 ? (
+                detail.reserve.map((res) => (
+                  <Thumb
+                    key={res.post_id}
+                    src={`/api/thumbs/${res.post_id}.jpg`}
+                    alt={stripHashtags(res.title)}
+                    width={40}
+                    height={70}
+                  />
+                ))
+              ) : (
+                <p className="text-[13px] text-[#6F7A73] font-ui py-[8px]">
+                  No clips added to reserve on this day.
+                </p>
+              )}
             </div>
           </div>
         </div>
@@ -491,25 +495,31 @@ export const AgentView: React.FC<AgentViewProps> = ({ onSelectClipForYouTube }) 
               Where good clips came from
             </h3>
             <div className="flex flex-col gap-[14px]">
-              {sourcesList.map(([src, stat]) => {
-                const yieldPct = stat.judged > 0 ? (stat.accepted / stat.judged) : 0.2;
-                return (
-                  <div key={src} className="flex flex-col gap-[6px]">
-                    <div className="flex items-center justify-between font-ui text-[14px]">
-                      <span className="text-[#1D3B33]">{src}</span>
-                      <span className="text-[#6F7A73] text-[13px]">
-                        {stat.accepted} of {stat.judged} accepted
-                      </span>
+              {sourcesList.length === 0 ? (
+                <p className="text-[13.5px] text-[#6F7A73] font-ui py-[8px]">
+                  No source data for this day.
+                </p>
+              ) : (
+                sourcesList.map(([src, stat]) => {
+                  const yieldPct = stat.judged > 0 ? (stat.accepted / stat.judged) : 0.2;
+                  return (
+                    <div key={src} className="flex flex-col gap-[6px]">
+                      <div className="flex items-center justify-between font-ui text-[14px]">
+                        <span className="text-[#1D3B33]">{src}</span>
+                        <span className="text-[#6F7A73] text-[13px]">
+                          {stat.accepted} of {stat.judged} accepted
+                        </span>
+                      </div>
+                      <div className="h-[6px] w-full rounded-[3px] bg-[#DADFDA] overflow-hidden">
+                        <div
+                          className="h-full bg-[#2E7D4F] rounded-[3px]"
+                          style={{ width: `${Math.max(8, Math.min(100, yieldPct * 100))}%` }}
+                        />
+                      </div>
                     </div>
-                    <div className="h-[6px] w-full rounded-[3px] bg-[#DADFDA] overflow-hidden">
-                      <div
-                        className="h-full bg-[#2E7D4F] rounded-[3px]"
-                        style={{ width: `${Math.max(8, Math.min(100, yieldPct * 100))}%` }}
-                      />
-                    </div>
-                  </div>
-                );
-              })}
+                  );
+                })
+              )}
             </div>
           </div>
         </div>

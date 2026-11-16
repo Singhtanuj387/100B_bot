@@ -9,7 +9,7 @@ from fastapi import APIRouter, Request, HTTPException, Response, status
 from fastapi.responses import FileResponse, StreamingResponse
 
 from dashboard.backend.db import get_ro_connection, WORKSPACE_DIR
-from dashboard.backend.thumbs import resolve_video_path_for_post, get_or_generate_thumbnail
+from dashboard.backend.thumbs import resolve_video_path_for_post, get_or_generate_thumbnail, get_placeholder_thumbnail
 from dashboard.backend.youtube_api import fetch_live_video_stats
 
 router = APIRouter(prefix="/api", tags=["youtube"])
@@ -263,12 +263,13 @@ def get_youtube_day(date: str):
 
 @router.get("/thumbs/{post_id}.jpg")
 def get_thumbnail(post_id: str):
-    """Serve cached 1-second thumbnail or generate it via ffmpeg."""
+    """Serve cached 1-second thumbnail, or generate it via ffmpeg; fall back to placeholder with 200 OK."""
     clean_id = re.sub(r"[^a-zA-Z0-9_\-]", "", post_id)
     thumb_path = get_or_generate_thumbnail(clean_id)
     if thumb_path and thumb_path.is_file():
         return FileResponse(thumb_path, media_type="image/jpeg", headers={"Cache-Control": "public, max-age=3600"})
-    raise HTTPException(status_code=404, detail="Thumbnail not available")
+    placeholder_path = get_placeholder_thumbnail()
+    return FileResponse(placeholder_path, media_type="image/jpeg", headers={"Cache-Control": "public, max-age=300"})
 
 
 @router.get("/video/{post_id}/stream")
@@ -276,6 +277,7 @@ def stream_video(post_id: str, request: Request):
     """
     HTTP Range streaming of local video file for post_id.
     Never accepts arbitrary path from client; validates post_id against database.
+    Clamps range end to file_size - 1 if request exceeds file bounds.
     """
     clean_id = re.sub(r"[^a-zA-Z0-9_\-]", "", post_id)
     video_path = resolve_video_path_for_post(clean_id)
@@ -294,7 +296,11 @@ def stream_video(post_id: str, request: Request):
             end_str = range_match.group(2)
             end = int(end_str) if end_str else file_size - 1
 
-            if start >= file_size or end >= file_size or start > end:
+            # Clamp end to file_size - 1 if it exceeds file bounds
+            if end >= file_size:
+                end = file_size - 1
+
+            if start >= file_size or start > end:
                 return Response(
                     status_code=status.HTTP_416_REQUESTED_RANGE_NOT_SATISFIABLE,
                     headers={"Content-Range": f"bytes */{file_size}"},

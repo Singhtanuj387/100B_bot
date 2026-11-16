@@ -3,6 +3,7 @@ import { Minus, Plus, Trash2, Clock, Check, AlertCircle, Sparkles, RefreshCw } f
 import { Thumb } from '../components/Thumb';
 import { StatusPill } from '../components/StatusPill';
 import { formatTimeET } from '../utils/timeFormat';
+import { stripHashtags } from '../utils/textFormat';
 import {
   parseHHMM,
   minutesToHHMM,
@@ -584,13 +585,13 @@ export const ScheduleView: React.FC = () => {
                       <div className="w-[38px] shrink-0">
                         <Thumb
                           src={assignedClip.thumb_url}
-                          alt={assignedClip.title}
+                          alt={stripHashtags(assignedClip.title)}
                           className="w-full aspect-[9/16] rounded-[6px]"
                         />
                       </div>
                       <div className="min-w-0 flex-1">
                         <p className="font-ui font-medium text-[13.5px] text-[#1D3B33] truncate">
-                          {assignedClip.title || 'Untitled Short'}
+                          {stripHashtags(assignedClip.title) || 'Untitled Short'}
                         </p>
                         <p className="font-ui text-[12px] text-[#6F7A73] truncate">
                           by {assignedClip.uploader || 'unknown'}

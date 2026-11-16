@@ -409,9 +409,10 @@ def get_agent_day_detail(target_date: str) -> Dict[str, Any]:
                     FROM agent_decisions
                 )
                 SELECT s.slot_time, s.slot_hour, s.post_id, s.title, s.uploader, s.source_url, s.video_path,
-                       COALESCE(d.hybrid_score, 8.0) as hybrid_score
+                       COALESCE(d.hybrid_score, r.score) as hybrid_score
                 FROM schedule s
                 LEFT JOIN latest_dec d ON s.post_id = d.post_id AND d.rn = 1
+                LEFT JOIN reserve_pool r ON s.post_id = r.post_id
                 WHERE s.target_date = ?
                 ORDER BY s.slot_time ASC
             """, (next_date,))
@@ -428,9 +429,10 @@ def get_agent_day_detail(target_date: str) -> Dict[str, Any]:
                         FROM agent_decisions
                     )
                     SELECT s.slot_time, s.slot_hour, s.post_id, s.title, s.uploader, s.source_url, s.video_path,
-                           COALESCE(d.hybrid_score, 8.0) as hybrid_score
+                           COALESCE(d.hybrid_score, r.score) as hybrid_score
                     FROM schedule s
                     LEFT JOIN latest_dec d ON s.post_id = d.post_id AND d.rn = 1
+                    LEFT JOIN reserve_pool r ON s.post_id = r.post_id
                     WHERE s.target_date = ?
                     ORDER BY s.slot_time ASC
                 """, (target_date,))
@@ -458,38 +460,84 @@ def get_agent_day_detail(target_date: str) -> Dict[str, Any]:
             r["time_display"] = time_disp
             r["thumb_url"] = f"/api/thumbs/{r['post_id']}.jpg"
 
-        # Available reserve clips
-        try:
-            cur = conn.execute("""
-                SELECT post_id, title, uploader, score, duration, status
-                FROM reserve_pool
-                WHERE status = 'available'
-                ORDER BY score DESC
-                LIMIT 12
-            """)
-            reserve_rows = [dict(r) for r in cur.fetchall()]
-        except sqlite3.OperationalError:
-            reserve_rows = []
+        now_ny = datetime.now(ZoneInfo("America/New_York"))
+        today_str = now_ny.strftime("%Y-%m-%d")
+        is_today = (target_date == today_str)
 
-        # Sources summary
-        source_stats = stats.get("source_stats_json") or {}
-        # If empty in run_stats, query sources table
-        if not source_stats:
+        # Reserve clips: today shows currently available pool; past days show clips added on that day
+        if is_today:
             try:
-                cur = conn.execute("SELECT name, downloaded_count, approved_count FROM sources WHERE status != 'exhausted' ORDER BY yield_rate DESC LIMIT 6")
-                for r in cur.fetchall():
-                    source_stats[f"r/{r['name']}"] = {
-                        "judged": r["downloaded_count"],
-                        "accepted": r["approved_count"],
-                    }
+                cur = conn.execute("""
+                    SELECT post_id, title, uploader, score, duration, status
+                    FROM reserve_pool
+                    WHERE status = 'available'
+                    ORDER BY score DESC
+                    LIMIT 12
+                """)
+                reserve_rows = [dict(r) for r in cur.fetchall()]
             except sqlite3.OperationalError:
+                reserve_rows = []
+            stored_reserve = stats.get("reserve_added") if stats.get("reserve_added") is not None else len(reserve_rows)
+        else:
+            try:
+                cur = conn.execute("""
+                    SELECT post_id, title, uploader, score, duration, status
+                    FROM reserve_pool
+                    WHERE DATE(added_at) = ? OR added_at LIKE ? || '%'
+                    ORDER BY score DESC
+                    LIMIT 12
+                """, (target_date, target_date))
+                reserve_rows = [dict(r) for r in cur.fetchall()]
+            except sqlite3.OperationalError:
+                reserve_rows = []
+            stored_reserve = stats.get("reserve_added", len(reserve_rows))
+
+        # Sources summary: for past days, use that day's stats only (never today's running total)
+        source_stats = stats.get("source_stats_json") or {}
+        if not source_stats:
+            derived_sources: Dict[str, Dict[str, int]] = {}
+            try:
+                cur = conn.execute("SELECT source_url FROM schedule WHERE target_date = ?", (target_date,))
+                for (s_url,) in cur.fetchall():
+                    if s_url and "/r/" in s_url:
+                        parts = s_url.split("/r/")[1].split("/")
+                        if parts and parts[0]:
+                            src = f"r/{parts[0]}"
+                            derived_sources.setdefault(src, {"judged": 0, "accepted": 0})
+                            derived_sources[src]["accepted"] += 1
+                            derived_sources[src]["judged"] += 1
+
+                cur = conn.execute("SELECT post_url FROM reserve_pool WHERE DATE(added_at) = ? OR added_at LIKE ? || '%'", (target_date, target_date))
+                for (p_url,) in cur.fetchall():
+                    if p_url and "/r/" in p_url:
+                        parts = p_url.split("/r/")[1].split("/")
+                        if parts and parts[0]:
+                            src = f"r/{parts[0]}"
+                            derived_sources.setdefault(src, {"judged": 0, "accepted": 0})
+                            derived_sources[src]["accepted"] += 1
+                            derived_sources[src]["judged"] += 1
+            except Exception:
                 pass
+
+            if derived_sources:
+                source_stats = derived_sources
+            elif is_today:
+                try:
+                    cur = conn.execute("SELECT name, downloaded_count, approved_count FROM sources WHERE status != 'exhausted' ORDER BY yield_rate DESC LIMIT 6")
+                    for r in cur.fetchall():
+                        source_stats[f"r/{r['name']}"] = {
+                            "judged": r["downloaded_count"],
+                            "accepted": r["approved_count"],
+                        }
+                except sqlite3.OperationalError:
+                    pass
+            else:
+                source_stats = {}
 
         # Funnel counts for ribbon
         # Proportions: dropped_before_judging, rejected_by_judge, stored_in_reserve, selected_for_tomorrow
         dropped_before = stats.get("dropped_prescreen", 0) + stats.get("dropped_filters", 0)
         rejected_judge = stats.get("rejected_judge", 0)
-        stored_reserve = len(reserve_rows) if reserve_rows else stats.get("reserve_added", 0)
         selected_tomorrow = len(lineup_rows) if lineup_rows else stats.get("selected", 0)
 
         # Fallback if totals are 0

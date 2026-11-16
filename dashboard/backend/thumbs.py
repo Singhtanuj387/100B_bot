@@ -73,3 +73,49 @@ def get_or_generate_thumbnail(post_id: str) -> Optional[Path]:
         pass
 
     return None
+
+
+def get_placeholder_thumbnail() -> Path:
+    """
+    Return path to a 9:16 gradient placeholder JPEG.
+    Generates it via PIL and caches in CACHE_DIR / 'placeholder.jpg'.
+    """
+    placeholder_path = CACHE_DIR / "placeholder.jpg"
+    if placeholder_path.is_file() and placeholder_path.stat().st_size > 0:
+        return placeholder_path
+
+    try:
+        from PIL import Image, ImageDraw
+
+        width, height = 180, 320
+        img = Image.new("RGB", (width, height))
+        draw = ImageDraw.Draw(img)
+
+        # Gradient from #335C4F (51, 92, 79) to #17302B (23, 48, 43)
+        top_color = (51, 92, 79)
+        bottom_color = (23, 48, 43)
+        for y in range(height):
+            ratio = y / float(height - 1)
+            r = int(top_color[0] + (bottom_color[0] - top_color[0]) * ratio)
+            g = int(top_color[1] + (bottom_color[1] - top_color[1]) * ratio)
+            b = int(top_color[2] + (bottom_color[2] - top_color[2]) * ratio)
+            draw.line([(0, y), (width, y)], fill=(r, g, b))
+
+        # Draw subtle centered play triangle
+        cx, cy = width // 2, height // 2
+        play_size = 14
+        points = [
+            (cx - play_size // 2, cy - play_size),
+            (cx - play_size // 2, cy + play_size),
+            (cx + play_size, cy),
+        ]
+        draw.polygon(points, fill=(255, 255, 255))
+
+        img.save(str(placeholder_path), "JPEG", quality=85)
+        return placeholder_path
+    except Exception:
+        if not placeholder_path.exists():
+            placeholder_path.write_bytes(
+                b"\xff\xd8\xff\xe0\x00\x10JFIF\x00\x01\x01\x00\x00\x01\x00\x01\x00\x00\xff\xdb\x00C\x00\x08\x06\x06\x07\x06\x05\x08\x07\x07\x07\t\t\x08\n\x0c\x14\r\x0c\x0b\x0b\x0c\x19\x12\x13\x0f\x14\x1d\x1a\x1f\x1e\x1d\x1a\x1c\x1c $.' \",#\x1c\x1c(7),01444\x1f'9=82<.342\xff\xc0\x00\x0b\x08\x00\x01\x00\x01\x01\x01\x11\x00\xff\xc4\x00\x1f\x00\x00\x01\x05\x01\x01\x01\x01\x01\x01\x00\x00\x00\x00\x00\x00\x00\x00\x01\x02\x03\x04\x05\x06\x07\x08\t\n\x0b\xff\xda\x00\x08\x01\x01\x00\x00?\x00\xbf\x00\xff\xd9"
+            )
+        return placeholder_path
