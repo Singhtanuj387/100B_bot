@@ -124,14 +124,20 @@ def get_schedule():
             """, (tomorrow_str,))
             for r in cur.fetchall():
                 d = dict(r)
-                # Parse slot time string to HH:MM
+                # Parse slot time string to HH:MM ET
                 slot_iso = d.get("slot_time") or ""
-                time_disp = "12:00 PM"
+                time_disp = "12 PM ET"
                 try:
-                    dt = datetime.fromisoformat(slot_iso)
-                    time_disp = dt.strftime("%I:%M %p").lstrip("0")
+                    dt = datetime.fromisoformat(slot_iso).astimezone(ZoneInfo("America/New_York"))
+                    if dt.minute == 0:
+                        time_disp = f"{dt.strftime('%I').lstrip('0')} {dt.strftime('%p')} ET"
+                    else:
+                        time_disp = f"{dt.strftime('%I:%M %p').lstrip('0')} ET"
                 except Exception:
-                    pass
+                    h = d.get("slot_hour", 12)
+                    period = "PM" if h >= 12 else "AM"
+                    h12 = h % 12 or 12
+                    time_disp = f"{h12} {period} ET"
                 d["time_display"] = time_disp
                 d["thumb_url"] = f"/api/thumbs/{d['post_id']}.jpg"
                 tomorrow_slots.append(d)

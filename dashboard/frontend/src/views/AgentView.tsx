@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { ScoreChip } from '../components/ScoreChip';
 import { Thumb } from '../components/Thumb';
+import { formatTimeET } from '../utils/timeFormat';
 
 interface DaySummary {
   date: string;
@@ -12,6 +13,7 @@ interface DaySummary {
 
 interface LineupItem {
   slot_time: string;
+  time_display?: string;
   post_id: string;
   title: string;
   uploader: string;
@@ -367,13 +369,7 @@ export const AgentView: React.FC<AgentViewProps> = ({ onSelectClipForYouTube }) 
               ))
             ) : detail?.lineup && detail.lineup.length > 0 ? (
               detail.lineup.map((item, idx) => {
-                let timeDisp = '12:00 PM';
-                try {
-                  const dt = new Date(item.slot_time);
-                  timeDisp = dt.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' });
-                } catch {
-                  timeDisp = `${12 + idx}:00 PM`;
-                }
+                const timeDisp = item.time_display || formatTimeET(item.slot_time || `${12 + idx}:00`);
 
                 return (
                   <button
@@ -381,7 +377,7 @@ export const AgentView: React.FC<AgentViewProps> = ({ onSelectClipForYouTube }) 
                     onClick={() => onSelectClipForYouTube?.(item.post_id)}
                     className="flex items-center gap-[16px] py-[10px] px-[8px] hover:bg-[#EDF0EC]/60 rounded-[8px] transition-colors text-left cursor-pointer group"
                   >
-                    <span className="font-heading font-medium text-[15px] text-[#1D3B33] w-[74px] shrink-0">
+                    <span className="font-heading font-medium text-[15px] text-[#1D3B33] w-[86px] shrink-0">
                       {timeDisp}
                     </span>
                     <Thumb src={item.thumb_url} alt={item.title} />

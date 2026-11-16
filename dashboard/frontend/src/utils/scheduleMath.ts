@@ -2,6 +2,8 @@
  * Utilities and pure math functions for schedule times, presets, and snapping.
  */
 
+export { formatTimeET, formatWeekdayET, formatDateET, CHANNEL_TIMEZONE, TZ_LABEL } from './timeFormat';
+
 export function parseHHMM(timeStr: string): number {
   if (!timeStr) return 0;
   const parts = timeStr.trim().split(':');

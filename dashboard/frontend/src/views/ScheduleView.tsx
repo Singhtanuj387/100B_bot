@@ -2,10 +2,10 @@ import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { Minus, Plus, Trash2, Clock, Check, AlertCircle, Sparkles, RefreshCw } from 'lucide-react';
 import { Thumb } from '../components/Thumb';
 import { StatusPill } from '../components/StatusPill';
+import { formatTimeET } from '../utils/timeFormat';
 import {
   parseHHMM,
   minutesToHHMM,
-  minutesTo12Hour,
   snapTo15Minutes,
   clampSlotsCount,
   sortSlots,
@@ -37,12 +37,12 @@ interface ScheduleApiResponse {
   can_retime_live: boolean;
 }
 
-// Generate all 96 valid 15-minute time options in a day for the select dropdown
+// Generate all 96 valid 15-minute time options in a day for the select dropdown (Channel ET)
 const TIME_OPTIONS: { value: string; label: string; minutes: number }[] = [];
 for (let m = 0; m <= 1425; m += 15) {
   TIME_OPTIONS.push({
     value: minutesToHHMM(m),
-    label: minutesTo12Hour(m),
+    label: formatTimeET(m),
     minutes: m,
   });
 }
@@ -276,7 +276,7 @@ export const ScheduleView: React.FC = () => {
             )}
           </div>
           <p className="font-ui text-[14px] text-[#6F7A73] mt-[8px]">
-            Channel timezone: <span className="font-medium text-[#1D3B33]">{timezone}</span> · Auto-uploads and publishing timeline
+            Channel timezone: <span className="font-medium text-[#1D3B33]">{timezone} (ET)</span> · Auto-uploads and publishing timeline
           </p>
         </div>
 
@@ -480,7 +480,7 @@ export const ScheduleView: React.FC = () => {
                   key={`marker-${idx}`}
                   role="slider"
                   tabIndex={0}
-                  aria-label={`Slot ${idx + 1} at ${minutesTo12Hour(mins)}`}
+                  aria-label={`Slot ${idx + 1} at ${formatTimeET(mins)}`}
                   aria-valuenow={mins}
                   aria-valuemin={0}
                   aria-valuemax={1425}
@@ -503,7 +503,7 @@ export const ScheduleView: React.FC = () => {
                     className={`absolute bottom-[36px] left-1/2 -translate-x-1/2 px-[8px] py-[3px] rounded-[6px] bg-[#1D3B33] text-white text-[11px] font-ui font-semibold whitespace-nowrap shadow-md pointer-events-none transition-opacity
                                 ${isDragging ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'}`}
                   >
-                    {minutesTo12Hour(mins)}
+                    {formatTimeET(mins)}
                   </div>
                 </div>
               );
@@ -512,15 +512,15 @@ export const ScheduleView: React.FC = () => {
 
           {/* Hour labels below track */}
           <div className="relative w-full h-[18px] text-[11px] font-ui text-[#6F7A73] flex justify-between px-[4px] mt-[4px]">
-            <span>12 AM</span>
-            <span>3 AM</span>
-            <span>6 AM</span>
-            <span>9 AM</span>
-            <span>12 PM</span>
-            <span>3 PM</span>
-            <span>6 PM</span>
-            <span>9 PM</span>
-            <span>12 AM</span>
+            <span>12 AM ET</span>
+            <span>3 AM ET</span>
+            <span>6 AM ET</span>
+            <span>9 AM ET</span>
+            <span>12 PM ET</span>
+            <span>3 PM ET</span>
+            <span>6 PM ET</span>
+            <span>9 PM ET</span>
+            <span>12 AM ET</span>
           </div>
         </div>
       </div>

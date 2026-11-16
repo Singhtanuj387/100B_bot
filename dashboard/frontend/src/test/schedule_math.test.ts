@@ -9,6 +9,8 @@ import {
   sortSlots,
   findNextAvailableSlot,
   generatePreset,
+  formatTimeET,
+  formatWeekdayET,
 } from '../utils/scheduleMath';
 
 describe('scheduleMath utils', () => {
@@ -90,5 +92,33 @@ describe('scheduleMath utils', () => {
         }
       }
     }
+  });
+
+  describe('ET timezone formatting', () => {
+    it('formats tomorrow lineup slot times in America/New_York with ET label', () => {
+      // 12:00, 14:00, 17:00 in America/New_York
+      expect(formatTimeET('2026-11-17T12:00:00-05:00')).toBe('12 PM ET');
+      expect(formatTimeET('2026-11-17T14:00:00-05:00')).toBe('2 PM ET');
+      expect(formatTimeET('2026-11-17T17:00:00-05:00')).toBe('5 PM ET');
+    });
+
+    it('formats rail next run and last run in America/New_York with ET label', () => {
+      // Next run at 18:00 (6 PM) in ET
+      expect(formatWeekdayET('2026-11-16T18:00:00-05:00')).toBe('Mon');
+      expect(formatTimeET('2026-11-16T18:00:00-05:00')).toBe('6 PM ET');
+      expect(formatWeekdayET('2026-11-17T18:00:00-05:00')).toBe('Tue');
+      expect(formatTimeET('2026-11-17T18:00:00-05:00')).toBe('6 PM ET');
+
+      // Last run with non-zero minutes
+      expect(formatWeekdayET('2026-11-14T18:02:15-05:00')).toBe('Sat');
+      expect(formatTimeET('2026-11-14T18:02:15-05:00')).toBe('6:02 PM ET');
+    });
+
+    it('formats minute and HH:MM inputs in ET', () => {
+      expect(formatTimeET('12:00')).toBe('12 PM ET');
+      expect(formatTimeET('18:30')).toBe('6:30 PM ET');
+      expect(formatTimeET(720)).toBe('12 PM ET');
+      expect(formatTimeET(1110)).toBe('6:30 PM ET');
+    });
   });
 });

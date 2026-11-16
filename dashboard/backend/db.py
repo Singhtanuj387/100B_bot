@@ -294,6 +294,24 @@ def get_agent_day_detail(target_date: str) -> Dict[str, Any]:
             except sqlite3.OperationalError:
                 lineup_rows = []
 
+        # Format time_display in America/New_York (ET)
+        for idx, r in enumerate(lineup_rows):
+            slot_iso = r.get("slot_time") or ""
+            time_disp = "12 PM ET"
+            try:
+                dt = datetime.fromisoformat(slot_iso).astimezone(ZoneInfo("America/New_York"))
+                if dt.minute == 0:
+                    time_disp = f"{dt.strftime('%I').lstrip('0')} {dt.strftime('%p')} ET"
+                else:
+                    time_disp = f"{dt.strftime('%I:%M %p').lstrip('0')} ET"
+            except Exception:
+                h = r.get("slot_hour", 12 + idx)
+                period = "PM" if h >= 12 else "AM"
+                h12 = h % 12 or 12
+                time_disp = f"{h12} {period} ET"
+            r["time_display"] = time_disp
+            r["thumb_url"] = f"/api/thumbs/{r['post_id']}.jpg"
+
         # Available reserve clips
         try:
             cur = conn.execute("""

@@ -2,6 +2,7 @@ import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { ExternalLink, Play, RefreshCw, Calendar as CalendarIcon, AlertCircle, Eye, ThumbsUp } from 'lucide-react';
 import { Thumb } from '../components/Thumb';
 import { StatusPill } from '../components/StatusPill';
+import { formatTimeET } from '../utils/timeFormat';
 
 export interface YouTubeClipItem {
   post_id: string;
@@ -253,8 +254,8 @@ export const YouTubeView: React.FC<YouTubeViewProps> = ({
                         ${isSelected ? 'bg-[#DCEBE0]/60 ring-1 ring-[#2E7D4F]/30' : 'hover:bg-[#EDF0EC]/60'}`}
                     >
                       {/* Slot time */}
-                      <span className="font-ui font-bold text-[13px] text-[#1D3B33] w-[68px] shrink-0">
-                        {clip.time_display}
+                      <span className="font-ui font-bold text-[13px] text-[#1D3B33] w-[86px] shrink-0">
+                        {clip.time_display || formatTimeET(clip.slot_time)}
                       </span>
 
                       {/* 9:16 Thumb */}
@@ -313,7 +314,7 @@ export const YouTubeView: React.FC<YouTubeViewProps> = ({
                   <div className="min-w-0 flex-1">
                     <div className="flex items-center gap-[8px]">
                       <span className="font-ui font-bold text-[13px] text-[#6F7A73]">
-                        {selectedClip.time_display}
+                        {selectedClip.time_display || formatTimeET(selectedClip.slot_time)}
                       </span>
                       <StatusPill status={selectedClip.status} />
                     </div>

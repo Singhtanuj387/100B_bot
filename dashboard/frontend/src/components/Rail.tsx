@@ -1,5 +1,6 @@
 import React from 'react';
 import { Bot, Calendar, PlaySquare } from 'lucide-react';
+import { formatTimeET, formatWeekdayET } from '../utils/timeFormat';
 
 export type NavTab = 'agent' | 'schedule' | 'youtube';
 
@@ -29,13 +30,12 @@ export const Rail: React.FC<RailProps> = ({
   const isLastRunPassed = lastRun?.status === 'success';
   const isLastRunPartial = lastRun?.status === 'partial';
 
-  // Format last run time
-  let lastRunTimeStr = 'Sat 6:02 PM · 6 of 6 uploaded';
+  // Format last run time (Channel ET)
+  let lastRunTimeStr = 'Sat 6:02 PM ET · 6 of 6 uploaded';
   if (lastRun?.finished_at) {
     try {
-      const dt = new Date(lastRun.finished_at);
-      const dayName = dt.toLocaleDateString('en-US', { weekday: 'short' });
-      const timeStr = dt.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' });
+      const dayName = formatWeekdayET(lastRun.finished_at);
+      const timeStr = formatTimeET(lastRun.finished_at);
       const up = lastRun.uploaded || 0;
       const sched = lastRun.scheduled || 0;
       const total = up + sched || 6;
@@ -45,13 +45,12 @@ export const Rail: React.FC<RailProps> = ({
     }
   }
 
-  // Format next run time
-  let nextRunTimeStr = 'Next run Sun 6:00 PM';
+  // Format next run time (Channel ET)
+  let nextRunTimeStr = 'Next run Sun 6 PM ET';
   if (pipelineStatus?.next_run_time) {
     try {
-      const dt = new Date(pipelineStatus.next_run_time);
-      const dayName = dt.toLocaleDateString('en-US', { weekday: 'short' });
-      const timeStr = dt.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' });
+      const dayName = formatWeekdayET(pipelineStatus.next_run_time);
+      const timeStr = formatTimeET(pipelineStatus.next_run_time);
       nextRunTimeStr = `Next run ${dayName} ${timeStr}`;
     } catch {
       // fallback

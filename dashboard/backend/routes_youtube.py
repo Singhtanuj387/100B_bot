@@ -71,7 +71,11 @@ def determine_clip_status(row: Dict[str, Any], live_info: Dict[str, Any], now_ut
                 diff_minutes = (now_utc - up_dt).total_seconds() / 60.0
                 if 0 <= diff_minutes <= 60:
                     is_on_air = True
-                time_text = up_dt.astimezone(ZoneInfo("America/New_York")).strftime("%I:%M %p").lstrip("0")
+                up_ny = up_dt.astimezone(ZoneInfo("America/New_York"))
+                if up_ny.minute == 0:
+                    time_text = f"{up_ny.strftime('%I').lstrip('0')} {up_ny.strftime('%p')} ET"
+                else:
+                    time_text = f"{up_ny.strftime('%I:%M %p').lstrip('0')} ET"
             except Exception:
                 pass
 
@@ -84,7 +88,11 @@ def determine_clip_status(row: Dict[str, Any], live_info: Dict[str, Any], now_ut
         try:
             pub_dt = datetime.fromisoformat(yt_publish_at.replace("Z", "+00:00"))
             if pub_dt > now_utc:
-                pub_ny = pub_dt.astimezone(ZoneInfo("America/New_York")).strftime("%I:%M %p").lstrip("0")
+                pub_ny_dt = pub_dt.astimezone(ZoneInfo("America/New_York"))
+                if pub_ny_dt.minute == 0:
+                    pub_ny = f"{pub_ny_dt.strftime('%I').lstrip('0')} {pub_ny_dt.strftime('%p')} ET"
+                else:
+                    pub_ny = f"{pub_ny_dt.strftime('%I:%M %p').lstrip('0')} ET"
                 return "Scheduled", f"Goes live at {pub_ny}"
             else:
                 return "Published", f"Published · {views_str} views · {likes_str} likes"
@@ -171,12 +179,18 @@ def get_youtube_day(date: str):
                 pass
 
         slot_time_iso = r.get("slot_time") or ""
-        time_disp = "12:00 PM"
+        time_disp = "12 PM ET"
         try:
-            dt = datetime.fromisoformat(slot_time_iso)
-            time_disp = dt.strftime("%I:%M %p").lstrip("0")
+            dt = datetime.fromisoformat(slot_time_iso).astimezone(ZoneInfo("America/New_York"))
+            if dt.minute == 0:
+                time_disp = f"{dt.strftime('%I').lstrip('0')} {dt.strftime('%p')} ET"
+            else:
+                time_disp = f"{dt.strftime('%I:%M %p').lstrip('0')} ET"
         except Exception:
-            pass
+            h = r.get("slot_hour", 12)
+            period = "PM" if h >= 12 else "AM"
+            h12 = h % 12 or 12
+            time_disp = f"{h12} {period} ET"
 
         items.append({
             "post_id": r["post_id"],
