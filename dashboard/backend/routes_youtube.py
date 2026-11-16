@@ -105,6 +105,11 @@ def determine_clip_status(row: Dict[str, Any], live_info: Dict[str, Any], now_ut
     if db_status in ("failed", "error") or last_error:
         return "Failed", f"Upload failed: {last_error or 'Unknown error'}"
 
+    # If the video has a video_id but YouTube does not return it in videos.list
+    vid_id = row.get("video_id")
+    if vid_id and live_info.get("missing"):
+        return "Missing on YouTube", "Missing on YouTube (deleted or removed)"
+
     yt_status = live_info.get("status", {})
     yt_privacy = yt_status.get("privacyStatus")
     yt_publish_at = yt_status.get("publishAt") or row.get("publish_at")

@@ -87,16 +87,32 @@ def fetch_live_video_stats(video_ids: List[str]) -> Dict[str, Dict[str, Any]]:
                 part="status,statistics",
                 id=",".join(chunk)
             ).execute()
+            returned_ids = set()
             for item in resp.get("items", []):
                 vid = item["id"]
+                returned_ids.add(vid)
                 data = {
+                    "found": True,
+                    "missing": False,
                     "status": item.get("status", {}),
                     "statistics": item.get("statistics", {}),
                 }
                 _VIDEOS_CACHE[vid] = (now, data)
                 results[vid] = data
+
+            # For an ID YouTube doesn't return, mark it as missing
+            for vid in chunk:
+                if vid not in returned_ids:
+                    data = {
+                        "found": False,
+                        "missing": True,
+                        "status": {},
+                        "statistics": {},
+                    }
+                    _VIDEOS_CACHE[vid] = (now, data)
+                    results[vid] = data
         except Exception:
-            # On API error, do not crash; leave missing IDs to show em dash
+            # On API error, do not crash; leave missing IDs uncached
             pass
 
     return results

@@ -1,6 +1,6 @@
 import React from 'react';
 
-export type StatusType = 'Selected' | 'Stored' | 'Scheduled' | 'On air' | 'Published' | 'Draft' | 'Failed';
+export type StatusType = 'Selected' | 'Stored' | 'Scheduled' | 'On air' | 'Published' | 'Draft' | 'Failed' | 'Missing on YouTube';
 
 interface StatusPillProps {
   status: StatusType | string;
@@ -9,6 +9,16 @@ interface StatusPillProps {
 
 export const StatusPill: React.FC<StatusPillProps> = ({ status, className = '' }) => {
   const norm = status.toLowerCase();
+
+  if (norm.includes('missing')) {
+    return (
+      <div className={`bg-[#D4412F]/15 border border-[#D4412F]/30 inline-flex items-center px-[10px] py-[4px] rounded-[999px] shrink-0 ${className}`}>
+        <span className="text-[#D4412F] text-[12px] font-semibold font-ui leading-none whitespace-nowrap">
+          Missing on YouTube
+        </span>
+      </div>
+    );
+  }
 
   if (norm === 'on air' || norm === 'on_air') {
     return (

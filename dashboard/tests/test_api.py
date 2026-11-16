@@ -275,7 +275,26 @@ def test_schedule_put_ruamel_roundtrip_comment_preservation(client, tmp_path, mo
     assert "17:30" in updated_text
 
 
-def test_youtube_status_rules(client, test_db_setup):
+def test_youtube_status_rules(client, test_db_setup, monkeypatch):
+    mock_service = MagicMock()
+    mock_service.videos().list().execute.return_value = {
+        "items": [
+            {
+                "id": "yt_vid_1",
+                "status": {
+                    "privacyStatus": "private",
+                    "publishAt": "2026-11-15T12:00:00-05:00",
+                },
+                "statistics": {
+                    "viewCount": "42",
+                    "likeCount": "5"
+                }
+            }
+        ]
+    }
+    monkeypatch.setattr(yt_api, "get_youtube_service", lambda: mock_service)
+    yt_api._VIDEOS_CACHE.clear()
+
     resp = client.get("/api/youtube/day/2026-11-15")
     assert resp.status_code == 200
     data = resp.json()
@@ -285,6 +304,27 @@ def test_youtube_status_rules(client, test_db_setup):
     assert clip["post_id"] == "clip1"
     # Was inserted as scheduled
     assert clip["status"] in ("Scheduled", "Published")
+
+
+def test_youtube_missing_deleted_video(client, test_db_setup, monkeypatch):
+    # Mock youtube service returning empty items (video was deleted on YouTube)
+    mock_service = MagicMock()
+    mock_service.videos().list().execute.return_value = {
+        "items": []
+    }
+    monkeypatch.setattr(yt_api, "get_youtube_service", lambda: mock_service)
+    yt_api._VIDEOS_CACHE.clear()
+
+    resp = client.get("/api/youtube/day/2026-11-15")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert len(data["clips"]) == 1
+    clip = data["clips"][0]
+    assert clip["post_id"] == "clip1"
+    assert clip["status"] == "Missing on YouTube"
+    assert "Missing on YouTube" in clip["status_detail"]
+    assert data["published_count"] == 0
+    assert data["scheduled_count"] == 0
 
 
 def test_http_range_video_streaming(client, tmp_path, monkeypatch):
