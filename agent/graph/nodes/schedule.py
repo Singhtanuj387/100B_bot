@@ -35,37 +35,59 @@ def interleave_sources(videos: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     return result
 
 
-def select_target_hours(target_count: int, peak_hours: List[int]) -> List[int]:
-    """
-    Select target_count hours across the day.
-    Prioritizes peak viewing hours, then fills with daytime waking hours.
-    """
-    if target_count >= 24:
-        return list(range(24))
+def parse_slot_time_tuple(val: Any) -> Tuple[int, int]:
+    """Parse integer hour (e.g. 14) or string 'HH:MM' (e.g. '14:30') into (hour, minute)."""
+    if isinstance(val, int):
+        return (val, 0)
+    if isinstance(val, str):
+        val = val.strip()
+        if ":" in val:
+            parts = val.split(":")
+            return (int(parts[0]), int(parts[1]))
+        return (int(val), 0)
+    return (int(val), 0)
 
-    # Preferred daytime non-peak hours before late night
-    daytime_non_peak = [h for h in [17, 16, 15, 11, 10, 9, 22, 23, 8, 7] if h not in peak_hours]
-    late_night = [h for h in range(24) if h not in peak_hours and h not in daytime_non_peak]
 
-    if target_count <= len(peak_hours):
-        # Pick target_count evenly spaced peak hours
-        step = max(1, len(peak_hours) // target_count)
-        selected = peak_hours[::step][:target_count]
-        for p in peak_hours:
+def select_target_slots(target_count: int, peak_slots: List[Any]) -> List[Tuple[int, int]]:
+    """
+    Select target_count (hour, minute) slots across the day.
+    Supports integer hours (e.g. 14) or 'HH:MM' strings (e.g. '14:30').
+    """
+    if target_count <= 0:
+        return []
+
+    parsed_peaks = sorted(set(parse_slot_time_tuple(p) for p in peak_slots))
+
+    if target_count <= len(parsed_peaks):
+        step = max(1, len(parsed_peaks) // target_count)
+        selected = parsed_peaks[::step][:target_count]
+        for p in parsed_peaks:
             if len(selected) >= target_count:
                 break
             if p not in selected:
                 selected.append(p)
     else:
-        selected = list(peak_hours)
+        selected = list(parsed_peaks)
         remaining = target_count - len(selected)
-        for h in daytime_non_peak + late_night:
+        daytime_non_peak = [(h, 0) for h in [17, 16, 15, 11, 10, 9, 22, 23, 8, 7] if (h, 0) not in parsed_peaks]
+        late_night = [(h, 0) for h in range(24) if (h, 0) not in parsed_peaks and (h, 0) not in daytime_non_peak]
+        for s in daytime_non_peak + late_night:
             if remaining <= 0:
                 break
-            selected.append(h)
+            selected.append(s)
             remaining -= 1
 
     return sorted(selected)
+
+
+def select_target_hours(target_count: int, peak_hours: List[int]) -> List[int]:
+    """
+    Backward-compatible selection returning integer hours.
+    """
+    if target_count >= 24:
+        return list(range(24))
+    slots = select_target_slots(target_count, peak_hours)
+    return [s[0] for s in slots]
 
 
 def schedule_node(
@@ -91,12 +113,14 @@ def schedule_node(
     except Exception:
         tz = ZoneInfo("UTC")
 
-    peak_hours = sorted(config.get("peak_hours", [12, 13, 14, 18, 19, 20, 21]))
-    target_hours = select_target_hours(target_count, peak_hours)
-    target_peak_hours = [h for h in target_hours if h in peak_hours]
-    target_non_peak_hours = [h for h in target_hours if h not in peak_hours]
+    raw_peak_hours = config.get("peak_hours", [12, 13, 14, 18, 19, 20, 21])
+    target_slots = select_target_slots(target_count, raw_peak_hours)
+    peak_slots_set = set(parse_slot_time_tuple(p) for p in raw_peak_hours)
 
-    logger.info(f"--- [Node: SCHEDULE] Building {len(target_hours)}-slot schedule for {target_date} ({tz_name}) ---")
+    target_peak_slots = [s for s in target_slots if s in peak_slots_set]
+    target_non_peak_slots = [s for s in target_slots if s not in peak_slots_set]
+
+    logger.info(f"--- [Node: SCHEDULE] Building {len(target_slots)}-slot schedule for {target_date} ({tz_name}) ---")
 
     # Verify that all approved video files actually exist on disk before scheduling
     valid_approved = []
@@ -170,7 +194,7 @@ def schedule_node(
             })
 
     # Separate peak candidates vs standard candidates
-    num_peaks = min(len(target_peak_hours), len(approved))
+    num_peaks = min(len(target_peak_slots), len(approved))
     peak_candidates = approved[:num_peaks]
     regular_candidates = approved[num_peaks:]
 
@@ -178,35 +202,39 @@ def schedule_node(
     peak_ordered = interleave_sources(peak_candidates)
     regular_ordered = interleave_sources(regular_candidates)
 
-    slot_assignments: Dict[int, Any] = {}
+    slot_assignments: Dict[str, Any] = {}
 
-    # 1. First assign top videos to peak hours
-    for h in target_peak_hours:
+    # 1. First assign top videos to peak slots
+    for s in target_peak_slots:
+        s_key = f"{s[0]:02d}:{s[1]:02d}"
         if peak_ordered:
-            slot_assignments[h] = (peak_ordered.pop(0), True)
+            slot_assignments[s_key] = (peak_ordered.pop(0), True)
         elif regular_ordered:
-            slot_assignments[h] = (regular_ordered.pop(0), True)
+            slot_assignments[s_key] = (regular_ordered.pop(0), True)
 
-    # 2. Next assign remaining videos to non-peak hours
-    for h in target_non_peak_hours:
+    # 2. Next assign remaining videos to non-peak slots
+    for s in target_non_peak_slots:
+        s_key = f"{s[0]:02d}:{s[1]:02d}"
         if regular_ordered:
-            slot_assignments[h] = (regular_ordered.pop(0), False)
+            slot_assignments[s_key] = (regular_ordered.pop(0), False)
         elif peak_ordered:
-            slot_assignments[h] = (peak_ordered.pop(0), False)
+            slot_assignments[s_key] = (peak_ordered.pop(0), False)
 
     schedule_slots: List[Dict[str, Any]] = []
-    empty_slots: List[int] = []
+    empty_slots: List[str] = []
     seen_titles: Set[str] = set()
 
-    # Map target hours in chronological order
-    for hour in target_hours:
+    # Map target slots in chronological order
+    for s in target_slots:
+        hour, minute = s
         slot_dt = datetime.strptime(target_date, "%Y-%m-%d").replace(
-            hour=hour, minute=0, second=0, tzinfo=tz
+            hour=hour, minute=minute, second=0, tzinfo=tz
         )
         slot_time_iso = slot_dt.isoformat()
+        s_key = f"{hour:02d}:{minute:02d}"
 
-        if hour in slot_assignments:
-            chosen_vid, is_peak = slot_assignments[hour]
+        if s_key in slot_assignments:
+            chosen_vid, is_peak = slot_assignments[s_key]
             slot_title = chosen_vid.get("youtube_title") or chosen_vid.get("title") or ""
 
             # Enforce title uniqueness across all slots in this schedule
@@ -218,8 +246,8 @@ def schedule_node(
                 else:
                     base = re.sub(r"\s*#\w+", "", slot_title).strip() or "Comedy Clip"
                     if is_generic_title(base):
-                        base = f"Hilarious Moment at {hour:02d}:00"
-                    slot_title = f"{base} (Slot {hour:02d}:00) #shorts #funny"
+                        base = f"Hilarious Moment at {hour:02d}:{minute:02d}"
+                    slot_title = f"{base} (Slot {hour:02d}:{minute:02d}) #shorts #funny"
 
             seen_titles.add(slot_title.lower().strip())
             chosen_vid["youtube_title"] = slot_title
@@ -240,11 +268,11 @@ def schedule_node(
             }
             schedule_slots.append(slot_entry)
         else:
-            empty_slots.append(hour)
+            empty_slots.append(s_key)
 
     if empty_slots:
         logger.warning(
-            f"Schedule has {len(empty_slots)} unfilled slots: Hours {empty_slots} "
+            f"Schedule has {len(empty_slots)} unfilled slots: Slots {empty_slots} "
             f"(Total scheduled: {len(schedule_slots)}/{target_count})"
         )
     else:

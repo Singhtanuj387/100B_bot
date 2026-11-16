@@ -16,22 +16,28 @@ SCOPES = [
     "https://www.googleapis.com/auth/youtube.readonly",
 ]
 
+MANAGE_SCOPES = [
+    "https://www.googleapis.com/auth/youtube",
+]
+
 DEFAULT_SECRETS_DIR = Path(__file__).resolve().parent / "secrets"
 
 
-def get_secrets_paths(secrets_dir: Optional[Path] = None) -> tuple[Path, Path]:
-    """Return paths to (client_secret.json, token.json)."""
+def get_secrets_paths(secrets_dir: Optional[Path] = None, manage: bool = False) -> tuple[Path, Path]:
+    """Return paths to (client_secret.json, token.json or token_manage.json)."""
     sdir = Path(secrets_dir or DEFAULT_SECRETS_DIR).resolve()
     sdir.mkdir(parents=True, exist_ok=True)
-    return sdir / "client_secret.json", sdir / "token.json"
+    token_filename = "token_manage.json" if manage else "token.json"
+    return sdir / "client_secret.json", sdir / token_filename
 
 
-def authenticate_interactive(secrets_dir: Optional[Path] = None) -> Credentials:
+def authenticate_interactive(secrets_dir: Optional[Path] = None, manage: bool = False) -> Credentials:
     """
     Run one-time interactive OAuth2 authorization in the user's browser.
-    Saves token.json (including refresh token) upon completion.
+    Saves token.json or token_manage.json (including refresh token) upon completion.
     """
-    client_secret_path, token_path = get_secrets_paths(secrets_dir)
+    client_secret_path, token_path = get_secrets_paths(secrets_dir, manage=manage)
+    active_scopes = MANAGE_SCOPES if manage else SCOPES
 
     if not client_secret_path.is_file():
         # Check if there is any client_secret*.json file in secrets dir
@@ -47,8 +53,8 @@ def authenticate_interactive(secrets_dir: Optional[Path] = None) -> Credentials:
             logger.error(err)
             raise FileNotFoundError(err)
 
-    logger.info(f"Initiating interactive OAuth flow using: {client_secret_path}")
-    flow = InstalledAppFlow.from_client_secrets_file(str(client_secret_path), SCOPES)
+    logger.info(f"Initiating interactive OAuth flow (manage={manage}) using: {client_secret_path}")
+    flow = InstalledAppFlow.from_client_secrets_file(str(client_secret_path), active_scopes)
     creds = flow.run_local_server(port=0, prompt="consent", access_type="offline")
 
     with open(token_path, "w", encoding="utf-8") as f:

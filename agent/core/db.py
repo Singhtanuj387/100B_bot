@@ -96,7 +96,42 @@ class AgentDatabase:
                 );
             """)
 
-            # 5. Daily Schedule Table for Phase 4
+            # 5. Daily Schedule Table for Phase 4 (Migrate to UNIQUE(target_date, slot_time))
+            sched_row = conn.execute("SELECT sql FROM sqlite_master WHERE type='table' AND name='schedule'").fetchone()
+            if sched_row and sched_row[0]:
+                sql_str = sched_row[0]
+                sql_clean = sql_str.replace(" ", "")
+                if "UNIQUE(target_date,slot_hour)" in sql_clean:
+                    logger.info("Migrating schedule table constraint from (target_date, slot_hour) to (target_date, slot_time)...")
+                    conn.execute("ALTER TABLE schedule RENAME TO schedule_old_migration;")
+                    conn.execute("""
+                        CREATE TABLE schedule (
+                            id INTEGER PRIMARY KEY AUTOINCREMENT,
+                            target_date TEXT NOT NULL,
+                            slot_hour INTEGER NOT NULL,
+                            slot_time TEXT NOT NULL,
+                            post_id TEXT NOT NULL,
+                            video_path TEXT NOT NULL,
+                            title TEXT,
+                            description TEXT,
+                            caption TEXT,
+                            source_url TEXT,
+                            uploader TEXT,
+                            status TEXT DEFAULT 'queued',
+                            created_at TEXT NOT NULL,
+                            UNIQUE(target_date, slot_time)
+                        );
+                    """)
+                    conn.execute("""
+                        INSERT OR IGNORE INTO schedule (
+                            id, target_date, slot_hour, slot_time, post_id, video_path,
+                            title, description, caption, source_url, uploader, status, created_at
+                        ) SELECT id, target_date, slot_hour, slot_time, post_id, video_path,
+                                 title, description, caption, source_url, uploader, status, created_at
+                          FROM schedule_old_migration;
+                    """)
+                    conn.execute("DROP TABLE schedule_old_migration;")
+
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS schedule (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -112,9 +147,11 @@ class AgentDatabase:
                     uploader TEXT,
                     status TEXT DEFAULT 'queued',
                     created_at TEXT NOT NULL,
-                    UNIQUE(target_date, slot_hour)
+                    UNIQUE(target_date, slot_time)
                 );
             """)
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_schedule_target_date ON schedule(target_date);")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_schedule_slot_time ON schedule(target_date, slot_time);")
 
             # 6. Phase 3.5: Dynamic Source Registry
             conn.execute("""
@@ -166,6 +203,44 @@ class AgentDatabase:
                     last_attempt_at TEXT NOT NULL
                 );
             """)
+
+            # 9. Curation Run Stats (for local dashboard)
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS run_stats (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    target_date TEXT NOT NULL,
+                    found INTEGER DEFAULT 0,
+                    dropped_prescreen INTEGER DEFAULT 0,
+                    dropped_duration INTEGER DEFAULT 0,
+                    downloaded INTEGER DEFAULT 0,
+                    dropped_filters INTEGER DEFAULT 0,
+                    judged INTEGER DEFAULT 0,
+                    rejected_judge INTEGER DEFAULT 0,
+                    borderline INTEGER DEFAULT 0,
+                    approved INTEGER DEFAULT 0,
+                    selected INTEGER DEFAULT 0,
+                    reserve_added INTEGER DEFAULT 0,
+                    reject_reasons_json TEXT DEFAULT '{}',
+                    source_stats_json TEXT DEFAULT '{}',
+                    created_at TEXT NOT NULL
+                );
+            """)
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_run_stats_date ON run_stats(target_date);")
+
+            # 10. Daily Master Pipeline Runs (written by run_daily.py)
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS daily_runs (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    started_at TEXT NOT NULL,
+                    finished_at TEXT,
+                    status TEXT NOT NULL,
+                    uploaded INTEGER DEFAULT 0,
+                    scheduled INTEGER DEFAULT 0,
+                    failed INTEGER DEFAULT 0,
+                    message TEXT
+                );
+            """)
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_daily_runs_status ON daily_runs(status);")
 
     # --- LLM Judge Cache ---
     def get_cached_judge(self, file_hash: str) -> Optional[Dict[str, Any]]:
@@ -714,4 +789,90 @@ class AgentDatabase:
                 "already_tried_names": already_tried,
                 "top_reject_reasons": top_reasons,
             }
+
+    # --- Run Stats & Daily Runs (Phase 5 Dashboard Instrumentation) ---
+    def record_run_stats(self, stats: Dict[str, Any]) -> int:
+        """Insert a run_stats record for a curation execution."""
+        now = datetime.now().isoformat()
+        with self._get_connection() as conn:
+            cursor = conn.execute("""
+                INSERT INTO run_stats (
+                    target_date, found, dropped_prescreen, dropped_duration, downloaded,
+                    dropped_filters, judged, rejected_judge, borderline, approved,
+                    selected, reserve_added, reject_reasons_json, source_stats_json, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, (
+                stats.get("target_date"),
+                stats.get("found", 0),
+                stats.get("dropped_prescreen", 0),
+                stats.get("dropped_duration", 0),
+                stats.get("downloaded", 0),
+                stats.get("dropped_filters", 0),
+                stats.get("judged", 0),
+                stats.get("rejected_judge", 0),
+                stats.get("borderline", 0),
+                stats.get("approved", 0),
+                stats.get("selected", 0),
+                stats.get("reserve_added", 0),
+                json.dumps(stats.get("reject_reasons_json", {})),
+                json.dumps(stats.get("source_stats_json", {})),
+                now,
+            ))
+            return cursor.lastrowid
+
+    def get_latest_run_stats(self, target_date: str) -> Optional[Dict[str, Any]]:
+        """Retrieve latest complete run_stats for target_date."""
+        with self._get_connection() as conn:
+            row = conn.execute("""
+                SELECT * FROM run_stats
+                WHERE target_date = ?
+                ORDER BY id DESC LIMIT 1
+            """, (target_date,)).fetchone()
+            if row:
+                d = dict(row)
+                for k in ("reject_reasons_json", "source_stats_json"):
+                    if isinstance(d.get(k), str):
+                        try:
+                            d[k] = json.loads(d[k])
+                        except Exception:
+                            d[k] = {}
+                return d
+        return None
+
+    def record_daily_run_start(self) -> int:
+        """Record the beginning of a daily pipeline execution."""
+        now = datetime.now().isoformat()
+        with self._get_connection() as conn:
+            cursor = conn.execute("""
+                INSERT INTO daily_runs (started_at, status)
+                VALUES (?, 'running')
+            """, (now,))
+            return cursor.lastrowid
+
+    def record_daily_run_finish(
+        self,
+        run_id: int,
+        status: str,
+        uploaded: int = 0,
+        scheduled: int = 0,
+        failed: int = 0,
+        message: str = "",
+    ) -> None:
+        """Update daily_runs upon run completion."""
+        now = datetime.now().isoformat()
+        with self._get_connection() as conn:
+            conn.execute("""
+                UPDATE daily_runs
+                SET finished_at = ?, status = ?, uploaded = ?, scheduled = ?, failed = ?, message = ?
+                WHERE id = ?
+            """, (now, status, uploaded, scheduled, failed, message, run_id))
+
+    def get_last_daily_run(self) -> Optional[Dict[str, Any]]:
+        """Retrieve most recent daily_runs record."""
+        with self._get_connection() as conn:
+            row = conn.execute("""
+                SELECT * FROM daily_runs
+                ORDER BY id DESC LIMIT 1
+            """).fetchone()
+            return dict(row) if row else None
 

@@ -184,6 +184,105 @@ def run_curation_graph(app, initial_state_or_input, graph_config):
     return state
 
 
+def compute_and_save_run_stats(db, final_state: dict, target_date: str) -> None:
+    """Compute curation pipeline metrics and record to run_stats table."""
+    raw_cands = final_state.get("raw_candidates", [])
+    dropped_titles = final_state.get("dropped_titles", [])
+    rejected = final_state.get("rejected", [])
+    approved = final_state.get("approved", [])
+    borderline = final_state.get("borderline", [])
+    schedule = final_state.get("final_schedule", [])
+
+    dropped_prescreen = len(dropped_titles)
+
+    reason_counts = {
+        "not_funny": 0,
+        "non_english": 0,
+        "watermark": 0,
+        "duration": 0,
+        "tv_film": 0,
+        "other": 0,
+    }
+
+    dropped_duration = 0
+    dropped_filters = 0
+    rejected_judge = 0
+
+    for r in rejected:
+        reason_text = (r.get("reason") or r.get("decision_reason") or "").lower()
+        if any(w in reason_text for w in ("not funny", "funny_score", "score", "threshold", "unfunny")):
+            reason_counts["not_funny"] += 1
+            rejected_judge += 1
+        elif any(w in reason_text for w in ("english", "language", "speech")):
+            reason_counts["non_english"] += 1
+            dropped_filters += 1
+        elif any(w in reason_text for w in ("watermark", "logo", "channel")):
+            reason_counts["watermark"] += 1
+            rejected_judge += 1
+        elif any(w in reason_text for w in ("duration", "seconds", "too long", "too short", "length")):
+            reason_counts["duration"] += 1
+            dropped_duration += 1
+            dropped_filters += 1
+        elif any(w in reason_text for w in ("tv", "film", "movie", "broadcast")):
+            reason_counts["tv_film"] += 1
+            rejected_judge += 1
+        else:
+            reason_counts["other"] += 1
+            if any(w in reason_text for w in ("filter", "resolution", "word", "low res")):
+                dropped_filters += 1
+            else:
+                rejected_judge += 1
+
+    source_stats = {}
+    for a in approved:
+        src = a.get("subreddit") or a.get("source") or "unknown"
+        if src not in source_stats:
+            source_stats[src] = {"judged": 0, "accepted": 0}
+        source_stats[src]["accepted"] += 1
+        source_stats[src]["judged"] += 1
+
+    for r in rejected:
+        src = r.get("subreddit") or r.get("source") or "unknown"
+        if src in source_stats:
+            source_stats[src]["judged"] += 1
+        elif "funny" in (r.get("reason") or "").lower() or r.get("score"):
+            if src not in source_stats:
+                source_stats[src] = {"judged": 0, "accepted": 0}
+            source_stats[src]["judged"] += 1
+
+    approved_count = len(approved)
+    selected_count = len(schedule)
+    reserve_added = max(0, approved_count - selected_count)
+    borderline_count = len(borderline)
+    judged_count = approved_count + rejected_judge + borderline_count
+
+    found_count = len(raw_cands) if raw_cands else (dropped_prescreen + len(rejected) + approved_count)
+    downloaded_count = max(0, found_count - dropped_prescreen)
+
+    stats = {
+        "target_date": target_date,
+        "found": found_count,
+        "dropped_prescreen": dropped_prescreen,
+        "dropped_duration": dropped_duration,
+        "downloaded": downloaded_count,
+        "dropped_filters": dropped_filters,
+        "judged": judged_count,
+        "rejected_judge": rejected_judge,
+        "borderline": borderline_count,
+        "approved": approved_count,
+        "selected": selected_count,
+        "reserve_added": reserve_added,
+        "reject_reasons_json": reason_counts,
+        "source_stats_json": source_stats,
+    }
+
+    try:
+        db.record_run_stats(stats)
+        logger.info(f"Recorded run_stats for {target_date}: {found_count} found, {len(rejected)} rejected, {approved_count} accepted.")
+    except Exception as e:
+        logger.warning(f"Could not record run_stats: {e}")
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Phase 3 Curation Agent — Automated Video Selection & Scheduling",
@@ -318,6 +417,9 @@ def main():
         dry_run=args.dry_run,
         schedule_path=schedule_path,
     )
+
+    # 6.5 Record Run Stats (Phase 5 Dashboard Instrumentation)
+    compute_and_save_run_stats(db=db, final_state=final_state, target_date=target_date)
 
     # 7. Optional Telegram Notification
     try:

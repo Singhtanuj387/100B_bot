@@ -121,6 +121,21 @@ class UploadDatabase:
                 );
             """)
 
+            # Daily Master Pipeline Runs (Phase 5 Dashboard Instrumentation)
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS daily_runs (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    started_at TEXT NOT NULL,
+                    finished_at TEXT,
+                    status TEXT NOT NULL,
+                    uploaded INTEGER DEFAULT 0,
+                    scheduled INTEGER DEFAULT 0,
+                    failed INTEGER DEFAULT 0,
+                    message TEXT
+                );
+            """)
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_daily_runs_status ON daily_runs(status);")
+
             # Backfill existing uploaded rows missing pacific_date
             rows = conn.execute("SELECT post_id, uploaded_at FROM uploads WHERE pacific_date IS NULL AND uploaded_at IS NOT NULL;").fetchall()
             for r in rows:
@@ -290,6 +305,45 @@ class UploadDatabase:
                 return paths
             except sqlite3.OperationalError:
                 return set()
+
+    def record_daily_run_start(self) -> int:
+        """Record the beginning of a daily pipeline execution."""
+        now = datetime.now().isoformat()
+        with self._get_connection() as conn:
+            cursor = conn.execute("""
+                INSERT INTO daily_runs (started_at, status)
+                VALUES (?, 'running')
+            """, (now,))
+            conn.commit()
+            return cursor.lastrowid
+
+    def record_daily_run_finish(
+        self,
+        run_id: int,
+        status: str,
+        uploaded: int = 0,
+        scheduled: int = 0,
+        failed: int = 0,
+        message: str = "",
+    ) -> None:
+        """Update daily_runs upon run completion."""
+        now = datetime.now().isoformat()
+        with self._get_connection() as conn:
+            conn.execute("""
+                UPDATE daily_runs
+                SET finished_at = ?, status = ?, uploaded = ?, scheduled = ?, failed = ?, message = ?
+                WHERE id = ?
+            """, (now, status, uploaded, scheduled, failed, message, run_id))
+            conn.commit()
+
+    def get_last_daily_run(self) -> Optional[Dict[str, Any]]:
+        """Retrieve most recent daily_runs record."""
+        with self._get_connection() as conn:
+            row = conn.execute("""
+                SELECT * FROM daily_runs
+                ORDER BY id DESC LIMIT 1
+            """).fetchone()
+            return dict(row) if row else None
 
 
 def update_schedule_slot(schedule_path: Path, post_id: str, updates: Dict[str, Any]):

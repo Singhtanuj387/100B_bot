@@ -1,0 +1,74 @@
+@import "@fontsource/bricolage-grotesque/400.css";
+@import "@fontsource/bricolage-grotesque/600.css";
+@import "@fontsource/bricolage-grotesque/700.css";
+@import "@fontsource/bricolage-grotesque/800.css";
+@import "@fontsource/instrument-sans/400.css";
+@import "@fontsource/instrument-sans/500.css";
+@import "@fontsource/instrument-sans/600.css";
+@import "@fontsource/instrument-sans/700.css";
+@import "tailwindcss";
+
+@theme {
+  --color-console: #EDF0EC;
+  --color-paper: #FFFFFF;
+  --color-pine: #1D3B33;
+  --color-pinesoft: #2A4F43;
+  --color-moss: #2E7D4F;
+  --color-mosstint: #DCEBE0;
+  --color-bandana: #D4412F;
+  --color-amber: #D99A1E;
+  --color-ambertint: #F7E9C8;
+  --color-amberink: #7A5600;
+  --color-slate: #6F7A73;
+  --color-slatetint: #DADFDA;
+  --color-line: #D5DBD5;
+  --color-railmuted: #B0C7BD;
+
+  --font-heading: 'Bricolage Grotesque', sans-serif;
+  --font-ui: 'Instrument Sans', sans-serif;
+}
+
+:root {
+  --color-console: #EDF0EC;
+  --color-paper: #FFFFFF;
+  --color-pine: #1D3B33;
+  --color-pinesoft: #2A4F43;
+  --color-moss: #2E7D4F;
+  --color-mosstint: #DCEBE0;
+  --color-bandana: #D4412F;
+  --color-amber: #D99A1E;
+  --color-ambertint: #F7E9C8;
+  --color-amberink: #7A5600;
+  --color-slate: #6F7A73;
+  --color-slatetint: #DADFDA;
+  --color-line: #D5DBD5;
+  --color-railmuted: #B0C7BD;
+
+  font-family: 'Instrument Sans', sans-serif;
+  background-color: var(--color-console);
+  color: var(--color-pine);
+  -webkit-font-smoothing: antialiased;
+}
+
+body {
+  margin: 0;
+  padding: 0;
+  min-height: 100vh;
+  background-color: #EDF0EC;
+}
+
+/* Custom scrollbar matching pine tokens */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: #EDF0EC;
+}
+::-webkit-scrollbar-thumb {
+  background: #DADFDA;
+  border-radius: 3px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #6F7A73;
+}

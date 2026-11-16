@@ -6,8 +6,8 @@ timezone: "America/New_York"     # Channel broadcast timezone (RFC 3339 conversi
 
 upload:
   mode: "scheduled"              # "scheduled" (batch evening before with publishAt) or "realtime" (run-due)
-  go_live: false                 # If false, uploads as private drafts without publishAt unless --confirm-public is given
-  first_run_private: true        # Safety net: first real upload is forced to private
+  go_live: true                 # If false, uploads as private drafts without publishAt unless --confirm-public is given
+  first_run_private: false        # Safety net: first real upload is forced to private
   max_uploads_per_day: 6         # Daily quota guard (matches 6 daily slots)
   category_id: "23"              # YouTube category 23 = Comedy
   tags:

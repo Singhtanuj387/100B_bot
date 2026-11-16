@@ -356,7 +356,75 @@ If running in realtime mode (`upload.mode: "realtime"`), create a secondary task
 
 ---
 
+## 📊 Phase 5 — Local Pipeline Dashboard
+
+A clean, responsive local dashboard for monitoring and managing the automated YouTube Shorts pipeline, built strictly on design tokens from Figma (Frames: Agent `3:2`, Schedule `4:63`, YouTube `5:111`, components `2:126`).
+
+### 1. Launching the Dashboard
+
+Start the FastAPI backend (serves the bundled React SPA):
+```bash
+python dashboard.py
+```
+Then open [http://127.0.0.1:8765](http://127.0.0.1:8765) in your browser.
+* Bound strictly to `127.0.0.1` (localhost only) with host header validation and security headers.
+* Read-only SQLite database access (`mode=ro`).
+
+### 2. Frontend Development & Build
+
+The frontend is built with React 19, TypeScript, Tailwind CSS v4, `@fontsource/bricolage-grotesque`, and `@fontsource/instrument-sans`.
+
+```bash
+# Navigate to frontend directory
+cd dashboard/frontend
+
+# Install dependencies (if not already done)
+npm install
+
+# Run frontend unit tests (Vitest)
+npm run test
+
+# Build static production bundle (outputs to dashboard/frontend/dist)
+npm run build
+
+# Start Vite dev server with proxy to backend (port 5173 -> 8765)
+npm run dev
+```
+
+### 3. Dashboard Sections
+
+1. **Agent View**:
+   - 7-day picker with daily found / kept metrics and live running indicator dot.
+   - Proportional funnel ribbon: dropped before judging, rejected by judge, stored in reserve, selected for tomorrow.
+   - Tomorrow's curated lineup with hybrid score chips and 9:16 thumbnails. Clicking any lineup row immediately jumps to the YouTube section with that clip selected.
+   - Reserve pool carousel, rejection reasons frequency chart, and source subreddit yield analysis.
+
+2. **Schedule View**:
+   - Daily volume stepper (1 to 12 videos per day).
+   - Presets chips: *Evening heavy*, *Even spread*, and *Morning and night*.
+   - 24-hour visual timeline divided into 4 day-parts (Night, Morning, Afternoon, Evening) with draggable markers snapping strictly to 15-minute intervals (also controllable via Left/Right arrow keys).
+   - 12-hour editable slot times with collision avoidance.
+   - Atomic config updates to `agent/config.yaml` (`target_count`, `peak_hours`) and `uploader/config.yaml` (`max_uploads_per_day`) preserving comments with `.bak` backups.
+
+3. **YouTube View**:
+   - Day switcher: *Today*, *Yesterday*, or custom native date picker.
+   - Daily broadcast rundown with live views, likes, and status badges (*Published*, *On air*, *Scheduled*, *Draft*, *Failed*).
+   - 9:16 player panel: YouTube embed for public videos, HTTP Range streaming (`/api/video/{post_id}/stream`) for private, draft, or local playback, and ffmpeg thumbnail generation (`/api/thumbs/{post_id}.jpg`).
+   - "Open on YouTube" and "Open in Studio" shortcuts.
+   - Auto-refreshes every 30 seconds when tab is active (automatically pauses when browser tab is hidden).
+
+### 4. YouTube Manage Scope for Retiming
+
+To enable live retiming of scheduled clips directly from the dashboard:
+```bash
+python upload.py auth --manage
+```
+This authenticates with the `https://www.googleapis.com/auth/youtube` scope and stores the manage token in `uploader/secrets/token_manage.json`. When saving a modified schedule, the dashboard will automatically call `videos.update` to shift `publishAt` for tomorrow's scheduled clips without touching public videos.
+
+---
+
 ## 🖥 Windows Drag & Drop Helper
 
 Double-click or drag-and-drop any video onto [`run.bat`](file:///c:/Drive-D/python%20tut/100B/run.bat) to launch the editor directly in Windows File Explorer.
+
 

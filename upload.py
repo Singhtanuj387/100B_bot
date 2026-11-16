@@ -69,10 +69,12 @@ def resolve_date_arg(date_str: str, timezone_name: str = "America/New_York") -> 
 
 def cmd_auth(args):
     """Run one-time interactive OAuth2 authorization."""
-    logger.info("Starting one-time YouTube OAuth authorization...")
+    is_manage = getattr(args, "manage", False)
+    logger.info(f"Starting one-time YouTube OAuth authorization (manage={is_manage})...")
     try:
-        authenticate_interactive()
-        print("\n[SUCCESS] YouTube OAuth authorized! token.json has been saved in uploader/secrets/.")
+        authenticate_interactive(manage=is_manage)
+        token_name = "token_manage.json" if is_manage else "token.json"
+        print(f"\n[SUCCESS] YouTube OAuth authorized! {token_name} has been saved in uploader/secrets/.")
     except Exception as e:
         logger.error(f"Auth failed: {e}")
         sys.exit(1)
@@ -398,6 +400,7 @@ def main():
 
     # 1. auth
     p_auth = subparsers.add_parser("auth", help="Perform one-time interactive OAuth authorization")
+    p_auth.add_argument("--manage", action="store_true", help="Authorize with youtube scope for dashboard management (saves to token_manage.json)")
     p_auth.set_defaults(func=cmd_auth)
 
     # 2. upload

@@ -152,6 +152,10 @@ def main():
         target_count = int(config.get("upload", {}).get("max_uploads_per_day", 6))
         schedule_path = BASE_DIR / "agent" / "data" / "edited" / target_date_str / "schedule.json"
 
+        # Initialize UploadDatabase and log daily run start (Phase 5 instrumentation)
+        db = UploadDatabase()
+        run_id = db.record_daily_run_start()
+
         logger.info(f"=== Starting Daily Bot Run for Date: {target_date_str} (Target: {target_count} clips | Dry Run: {args.dry_run}) ===")
 
         # Step 1: Curation
@@ -247,10 +251,37 @@ def main():
             logger.warning(f"Archival/cleanup step encountered warning: {e}")
 
         # Step 5: Evaluate Final Outcome (Success, Partial, or Failed)
+        # Tally slots status
+        uploaded_slots = 0
+        scheduled_slots = 0
+        failed_slots = 0
+        if schedule_path.is_file():
+            try:
+                with open(schedule_path, "r", encoding="utf-8") as f:
+                    final_sched = json.load(f)
+                for slot in final_sched.get("slots", []):
+                    st = slot.get("status")
+                    if st == "uploaded":
+                        uploaded_slots += 1
+                    elif st == "scheduled":
+                        scheduled_slots += 1
+                    elif st in ("failed", "error"):
+                        failed_slots += 1
+            except Exception:
+                pass
+
         # Condition A: Upload step failed
         if not args.skip_upload and not upload_ok:
             msg = f"Daily pipeline FAILED for date {target_date_str}: Upload step exited with errors."
             logger.error(msg)
+            db.record_daily_run_finish(
+                run_id=run_id,
+                status="failed",
+                uploaded=uploaded_slots,
+                scheduled=scheduled_slots,
+                failed=failed_slots or 1,
+                message=msg,
+            )
             send_telegram_alert("DAILY_RUN_FAILED", msg, {
                 "target_date": target_date_str,
                 "curated_count": curated_count,
@@ -267,6 +298,14 @@ def main():
                 f"Upload completed for the available clips."
             )
             logger.warning(msg)
+            db.record_daily_run_finish(
+                run_id=run_id,
+                status="partial",
+                uploaded=uploaded_slots,
+                scheduled=scheduled_slots,
+                failed=failed_slots,
+                message=msg,
+            )
             send_telegram_alert(
                 "DAILY_RUN_PARTIAL",
                 f"<b>⚠️ Daily 100B Run PARTIAL</b>\n\n"
@@ -284,6 +323,14 @@ def main():
 
         # Condition C: Full Success
         logger.success(f"Daily pipeline finished successfully for date: {target_date_str} ({curated_count}/{target_count} clips)!")
+        db.record_daily_run_finish(
+            run_id=run_id,
+            status="success",
+            uploaded=uploaded_slots,
+            scheduled=scheduled_slots,
+            failed=failed_slots,
+            message="Completed successfully",
+        )
         send_telegram_alert(
             "DAILY_RUN_COMPLETE",
             f"<b>🏆 Daily 100B Run Completed</b>\n\n"
