@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { ScoreChip } from '../components/ScoreChip';
 import { Thumb } from '../components/Thumb';
-import { formatTimeET } from '../utils/timeFormat';
+import { formatTimeET, formatDateET } from '../utils/timeFormat';
 
 interface DaySummary {
   date: string;
@@ -9,6 +9,7 @@ interface DaySummary {
   approved: number;
   rejected?: number;
   is_running?: boolean;
+  is_today?: boolean;
 }
 
 interface LineupItem {
@@ -31,6 +32,7 @@ interface ReserveItem {
 
 interface AgentDetailData {
   target_date: string;
+  lineup_target_date?: string;
   estimated: boolean;
   totals: {
     found: number;
@@ -72,8 +74,13 @@ export const AgentView: React.FC<AgentViewProps> = ({ onSelectClipForYouTube }) 
         if (isMounted) {
           setDays(data);
           if (data.length > 0) {
-            // Select the most recent day by default
-            setSelectedDate(data[data.length - 1].date);
+            // Start with today selected
+            const todayEntry = data.find((d: DaySummary) => d.is_today);
+            if (todayEntry) {
+              setSelectedDate(todayEntry.date);
+            } else {
+              setSelectedDate(data[data.length - 1].date);
+            }
           }
           setLoadingDays(false);
         }
@@ -118,8 +125,8 @@ export const AgentView: React.FC<AgentViewProps> = ({ onSelectClipForYouTube }) 
   const formattedDateTitle = React.useMemo(() => {
     if (!selectedDate) return 'Saturday 14 November';
     try {
-      const dt = new Date(`${selectedDate}T12:00:00`);
-      return dt.toLocaleDateString('en-US', { weekday: 'long', day: 'numeric', month: 'long' });
+      const dt = new Date(`${selectedDate}T12:00:00-05:00`);
+      return dt.toLocaleDateString('en-US', { timeZone: 'America/New_York', weekday: 'long', day: 'numeric', month: 'long' });
     } catch {
       return selectedDate;
     }
@@ -128,8 +135,8 @@ export const AgentView: React.FC<AgentViewProps> = ({ onSelectClipForYouTube }) 
   // Format day picker card label: e.g. "Sun 8"
   const formatPickerLabel = (dateStr: string) => {
     try {
-      const dt = new Date(`${dateStr}T12:00:00`);
-      return dt.toLocaleDateString('en-US', { weekday: 'short', day: 'numeric' });
+      const dt = new Date(`${dateStr}T12:00:00-05:00`);
+      return dt.toLocaleDateString('en-US', { timeZone: 'America/New_York', weekday: 'short', day: 'numeric' });
     } catch {
       return dateStr;
     }
@@ -228,6 +235,11 @@ export const AgentView: React.FC<AgentViewProps> = ({ onSelectClipForYouTube }) 
                   <span className="font-ui font-semibold text-[14px] text-[#1D3B33]">
                     {formatPickerLabel(d.date)}
                   </span>
+                  {d.is_today && (
+                    <span className="text-[10px] font-bold px-[5px] py-[1px] rounded bg-[#DCEBE0] text-[#2E7D4F] uppercase tracking-wider">
+                      Today
+                    </span>
+                  )}
                   {d.is_running && (
                     <span className="size-[7px] rounded-full bg-[#D4412F] animate-pulse" title="Active curation run" />
                   )}
@@ -351,11 +363,18 @@ export const AgentView: React.FC<AgentViewProps> = ({ onSelectClipForYouTube }) 
         {/* Left: Lineup Card */}
         <div className="flex-1 bg-white rounded-[16px] p-[20px] lg:p-[28px] border border-[#D5DBD5]/40 flex flex-col w-full shadow-sm">
           <div className="flex flex-col gap-[4px] pb-[16px]">
-            <h3 className="font-heading font-semibold text-[22px] text-[#1D3B33]">
-              Tomorrow's lineup
-            </h3>
+            <div className="flex items-center justify-between">
+              <h3 className="font-heading font-semibold text-[22px] text-[#1D3B33]">
+                {days.find(d => d.date === selectedDate)?.is_today ? "Tomorrow's lineup" : "Next day's lineup"}
+              </h3>
+              {detail?.lineup_target_date && (
+                <span className="font-ui text-[12px] font-semibold text-[#2E7D4F] bg-[#DCEBE0] px-[8px] py-[2px] rounded-[6px]">
+                  For {formatDateET(detail.lineup_target_date, { month: 'short', day: 'numeric' })}
+                </span>
+              )}
+            </div>
             <p className="font-ui text-[14px] text-[#6F7A73]">
-              {detail?.lineup.length || 6} clips ranked by score. Click any row to preview.
+              {detail?.lineup.length || 0} clips ranked by score. Click any row to preview.
             </p>
           </div>
 

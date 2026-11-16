@@ -95,40 +95,52 @@ def is_pipeline_active() -> bool:
 def get_agent_days(num_days: int = 7) -> List[Dict[str, Any]]:
     """
     Return summary statistics for the last `num_days` days for the day picker.
-    Pulls from run_stats, falling back to deduplicated agent_decisions if run_stats is missing.
+    Ends strictly at today (channel timezone America/New_York) so future test dates
+    are not shown in the picker. Starts with today selected.
     """
+    from datetime import timedelta
     tz = ZoneInfo("America/New_York")
-    today_str = datetime.now(tz).strftime("%Y-%m-%d")
+    now_ny = datetime.now(tz)
+    today_str = now_ny.strftime("%Y-%m-%d")
 
     with get_ro_connection() as conn:
-        # Check available dates from run_stats, schedule, and agent_decisions
         dates_set = set()
+        # Query distinct dates from DB, but only up to today (ignore future test dates)
         try:
-            for r in conn.execute("SELECT DISTINCT target_date FROM run_stats ORDER BY target_date DESC LIMIT ?", (num_days,)):
+            for r in conn.execute(
+                "SELECT DISTINCT target_date FROM run_stats WHERE target_date <= ? ORDER BY target_date DESC LIMIT ?",
+                (today_str, num_days)
+            ):
                 if r[0]: dates_set.add(r[0])
         except sqlite3.OperationalError:
             pass
 
         try:
-            for r in conn.execute("SELECT DISTINCT target_date FROM schedule ORDER BY target_date DESC LIMIT ?", (num_days,)):
+            for r in conn.execute(
+                "SELECT DISTINCT target_date FROM schedule WHERE target_date <= ? ORDER BY target_date DESC LIMIT ?",
+                (today_str, num_days)
+            ):
                 if r[0]: dates_set.add(r[0])
         except sqlite3.OperationalError:
             pass
 
         try:
-            for r in conn.execute("SELECT DISTINCT target_date FROM agent_decisions ORDER BY target_date DESC LIMIT ?", (num_days,)):
+            for r in conn.execute(
+                "SELECT DISTINCT target_date FROM agent_decisions WHERE target_date <= ? ORDER BY target_date DESC LIMIT ?",
+                (today_str, num_days)
+            ):
                 if r[0]: dates_set.add(r[0])
         except sqlite3.OperationalError:
             pass
 
-        # Also generate contiguous list ending at tomorrow/today if needed
-        from datetime import timedelta
-        base_now = datetime.now(tz)
-        for offset in range(-6, 2):
-            dates_set.add((base_now + timedelta(days=offset)).strftime("%Y-%m-%d"))
+        # Ensure contiguous num_days strip ending at today
+        for offset in range(-(num_days - 1), 1):
+            dates_set.add((now_ny + timedelta(days=offset)).strftime("%Y-%m-%d"))
 
-        sorted_dates = sorted(dates_set, reverse=True)[:num_days]
-        sorted_dates.sort()  # Ascending order for the 7-day strip (older -> newer)
+        # Take the last num_days ending at today
+        valid_dates = [d for d in dates_set if d <= today_str]
+        sorted_dates = sorted(valid_dates, reverse=True)[:num_days]
+        sorted_dates.sort()  # Ascending order for the 7-day strip (older -> newer, ending at today)
 
         results = []
         is_running = is_pipeline_active()
@@ -136,6 +148,7 @@ def get_agent_days(num_days: int = 7) -> List[Dict[str, Any]]:
         for d in sorted_dates:
             day_data = _get_day_stats_internal(conn, d)
             day_data["date"] = d
+            day_data["is_today"] = (d == today_str)
             if d == today_str and is_running:
                 day_data["is_running"] = True
             else:
@@ -260,19 +273,27 @@ def _get_day_stats_internal(conn: sqlite3.Connection, target_date: str) -> Dict[
 
 def get_agent_day_detail(target_date: str) -> Dict[str, Any]:
     """
-    Detailed data for Agent view: funnel ribbon, totals, tomorrow lineup,
+    Detailed data for Agent view: funnel ribbon, totals, lineup (for next day per design),
     reserve pool rows, rejection reasons, and source yield.
+    Under a selected day, shows the next day's curated clips (tomorrow's lineup).
     """
+    from datetime import timedelta
+    try:
+        dt = datetime.strptime(target_date, "%Y-%m-%d")
+        next_date = (dt + timedelta(days=1)).strftime("%Y-%m-%d")
+    except Exception:
+        next_date = target_date
+
     with get_ro_connection() as conn:
         stats = _get_day_stats_internal(conn, target_date)
 
-        # Lineup: schedule joined with agent_decisions (latest per post_id)
+        # Lineup: Under a selected day, show the next day's curated clips (tomorrow's lineup)
+        lineup_rows = []
         try:
             cur = conn.execute("""
                 WITH latest_dec AS (
-                    SELECT post_id, hybrid_score, ROW_NUMBER() OVER (PARTITION BY post_id, target_date ORDER BY id DESC) as rn
+                    SELECT post_id, hybrid_score, ROW_NUMBER() OVER (PARTITION BY post_id ORDER BY id DESC) as rn
                     FROM agent_decisions
-                    WHERE target_date = ?
                 )
                 SELECT s.slot_time, s.slot_hour, s.post_id, s.title, s.uploader, s.source_url, s.video_path,
                        COALESCE(d.hybrid_score, 8.0) as hybrid_score
@@ -280,30 +301,42 @@ def get_agent_day_detail(target_date: str) -> Dict[str, Any]:
                 LEFT JOIN latest_dec d ON s.post_id = d.post_id AND d.rn = 1
                 WHERE s.target_date = ?
                 ORDER BY s.slot_time ASC
-            """, (target_date, target_date))
+            """, (next_date,))
             lineup_rows = [dict(r) for r in cur.fetchall()]
         except sqlite3.OperationalError:
+            pass
+
+        # Fallback if no rows found for next_date: check target_date itself
+        if not lineup_rows:
             try:
                 cur = conn.execute("""
-                    SELECT slot_time, slot_hour, post_id, title, uploader, source_url, video_path, 8.0 as hybrid_score
-                    FROM schedule
-                    WHERE target_date = ?
-                    ORDER BY slot_time ASC
+                    WITH latest_dec AS (
+                        SELECT post_id, hybrid_score, ROW_NUMBER() OVER (PARTITION BY post_id ORDER BY id DESC) as rn
+                        FROM agent_decisions
+                    )
+                    SELECT s.slot_time, s.slot_hour, s.post_id, s.title, s.uploader, s.source_url, s.video_path,
+                           COALESCE(d.hybrid_score, 8.0) as hybrid_score
+                    FROM schedule s
+                    LEFT JOIN latest_dec d ON s.post_id = d.post_id AND d.rn = 1
+                    WHERE s.target_date = ?
+                    ORDER BY s.slot_time ASC
                 """, (target_date,))
                 lineup_rows = [dict(r) for r in cur.fetchall()]
             except sqlite3.OperationalError:
                 lineup_rows = []
+
+        lineup_target_date = next_date if lineup_rows else target_date
 
         # Format time_display in America/New_York (ET)
         for idx, r in enumerate(lineup_rows):
             slot_iso = r.get("slot_time") or ""
             time_disp = "12 PM ET"
             try:
-                dt = datetime.fromisoformat(slot_iso).astimezone(ZoneInfo("America/New_York"))
-                if dt.minute == 0:
-                    time_disp = f"{dt.strftime('%I').lstrip('0')} {dt.strftime('%p')} ET"
+                dt_iso = datetime.fromisoformat(slot_iso).astimezone(ZoneInfo("America/New_York"))
+                if dt_iso.minute == 0:
+                    time_disp = f"{dt_iso.strftime('%I').lstrip('0')} {dt_iso.strftime('%p')} ET"
                 else:
-                    time_disp = f"{dt.strftime('%I:%M %p').lstrip('0')} ET"
+                    time_disp = f"{dt_iso.strftime('%I:%M %p').lstrip('0')} ET"
             except Exception:
                 h = r.get("slot_hour", 12 + idx)
                 period = "PM" if h >= 12 else "AM"
@@ -364,6 +397,7 @@ def get_agent_day_detail(target_date: str) -> Dict[str, Any]:
 
         return {
             "target_date": target_date,
+            "lineup_target_date": lineup_target_date,
             "estimated": stats.get("estimated", False),
             "totals": {
                 "found": total_found,
