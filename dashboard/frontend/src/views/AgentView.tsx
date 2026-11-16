@@ -366,7 +366,14 @@ export const AgentView: React.FC<AgentViewProps> = ({ onSelectClipForYouTube }) 
           <div className="flex flex-col gap-[4px] pb-[16px]">
             <div className="flex items-center justify-between">
               <h3 className="font-heading font-semibold text-[22px] text-[#1D3B33]">
-                {days.find(d => d.date === selectedDate)?.is_today ? "Tomorrow's lineup" : "Next day's lineup"}
+                {(() => {
+                  const isNextDay = detail?.lineup_target_date && detail.lineup_target_date > selectedDate;
+                  const isToday = days.find(d => d.date === selectedDate)?.is_today;
+                  if (isNextDay) {
+                    return isToday ? "Tomorrow's lineup" : "Next day's lineup";
+                  }
+                  return `Lineup for ${formatDateET(detail?.lineup_target_date || selectedDate, { weekday: 'short', day: 'numeric' })}`;
+                })()}
               </h3>
               {detail?.lineup_target_date && (
                 <span className="font-ui text-[12px] font-semibold text-[#2E7D4F] bg-[#DCEBE0] px-[8px] py-[2px] rounded-[6px]">

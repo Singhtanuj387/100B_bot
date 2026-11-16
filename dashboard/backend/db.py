@@ -43,7 +43,7 @@ def update_local_retimed_data(
 ) -> Dict[str, int]:
     """
     Controlled write of retimed clip times to SQLite (schedule and uploads tables)
-    and schedule.json files after successful YouTube videos.update.
+    and schedule.json files in an explicit transaction BEFORE YouTube updates.
     """
     if not retimed_items:
         return {"db_updated": 0, "json_updated": 0}
@@ -57,14 +57,31 @@ def update_local_retimed_data(
         conn.row_factory = sqlite3.Row
         try:
             with conn:
-                # Step 1a: Temporarily rename slot_time for affected rows to avoid UNIQUE(target_date, slot_time) collisions
+                # 1. Defensively clean up any orphaned schedule rows for target_date that do NOT belong to scheduled clips
+                conn.execute("""
+                    DELETE FROM schedule
+                    WHERE target_date = ?
+                      AND (post_id IS NULL OR post_id NOT IN (
+                          SELECT post_id FROM uploads WHERE target_date = ?
+                      ))
+                """, (target_date, target_date))
+
+                # Deduplicate if duplicate rows exist for the same post_id in schedule
+                conn.execute("""
+                    DELETE FROM schedule
+                    WHERE target_date = ? AND id NOT IN (
+                        SELECT MAX(id) FROM schedule WHERE target_date = ? GROUP BY post_id
+                    )
+                """, (target_date, target_date))
+
+                # 2. Temporarily rename slot_time for affected rows to avoid UNIQUE(target_date, slot_time) collisions
                 for item in retimed_items:
                     conn.execute(
                         "UPDATE schedule SET slot_time = ? WHERE target_date = ? AND post_id = ?",
                         (f"__retime_tmp__{item['post_id']}", target_date, item["post_id"]),
                     )
 
-                # Step 1b: Apply final slot_time and slot_hour to schedule table
+                # 3. Apply final slot_time and slot_hour to schedule table
                 for item in retimed_items:
                     cur = conn.execute(
                         "UPDATE schedule SET slot_time = ?, slot_hour = ? WHERE target_date = ? AND post_id = ?",
@@ -72,7 +89,7 @@ def update_local_retimed_data(
                     )
                     db_updated += cur.rowcount
 
-                # Step 1c: Update uploads table (publish_at and slot_time)
+                # 4. Update uploads table (publish_at and slot_time)
                 for item in retimed_items:
                     conn.execute(
                         "UPDATE uploads SET publish_at = ?, slot_time = ? WHERE target_date = ? AND post_id = ?",
@@ -81,7 +98,7 @@ def update_local_retimed_data(
         finally:
             conn.close()
 
-    # 2. Update schedule.json files
+    # 5. Update schedule.json files
     json_updated = 0
     candidate_paths = [
         actual_data_dir / "edited" / target_date / "schedule.json",
@@ -139,6 +156,104 @@ def update_local_retimed_data(
     return {"db_updated": db_updated, "json_updated": json_updated}
 
 
+def rollback_local_retimed_data(
+    target_date: str,
+    retimed_items: List[Dict[str, Any]],
+    db_path: Optional[Path] = None,
+    data_dir: Optional[Path] = None,
+) -> None:
+    """
+    Roll back local SQLite changes and restore schedule.json from .bak backups
+    if YouTube retiming fails.
+    """
+    if not retimed_items:
+        return
+
+    actual_db_path = Path(db_path or DB_PATH).resolve()
+    actual_data_dir = Path(data_dir or (WORKSPACE_DIR / "agent" / "data")).resolve()
+
+    if actual_db_path.is_file():
+        conn = sqlite3.connect(str(actual_db_path), timeout=30.0)
+        conn.row_factory = sqlite3.Row
+        try:
+            with conn:
+                # 1. Temporarily rename to avoid collisions during rollback
+                for item in retimed_items:
+                    if item.get("old_slot_time"):
+                        conn.execute(
+                            "UPDATE schedule SET slot_time = ? WHERE target_date = ? AND post_id = ?",
+                            (f"__rollback_tmp__{item['post_id']}", target_date, item["post_id"]),
+                        )
+
+                # 2. Restore original slot_time and slot_hour to schedule
+                for item in retimed_items:
+                    if item.get("old_slot_time"):
+                        conn.execute(
+                            "UPDATE schedule SET slot_time = ?, slot_hour = ? WHERE target_date = ? AND post_id = ?",
+                            (item["old_slot_time"], item["old_slot_hour"], target_date, item["post_id"]),
+                        )
+
+                # 3. Restore original publish_at and slot_time to uploads
+                for item in retimed_items:
+                    if item.get("old_publish_at") or item.get("old_slot_time"):
+                        conn.execute(
+                            "UPDATE uploads SET publish_at = ?, slot_time = ? WHERE target_date = ? AND post_id = ?",
+                            (item.get("old_publish_at"), item.get("old_slot_time"), target_date, item["post_id"]),
+                        )
+        except Exception:
+            pass
+        finally:
+            conn.close()
+
+    # 4. Restore schedule.json from .bak backups if available
+    candidate_paths = [
+        actual_data_dir / "edited" / target_date / "schedule.json",
+        actual_data_dir / "published" / target_date / "schedule.json",
+        actual_data_dir / target_date / "schedule.json",
+        actual_data_dir / "schedule.json",
+    ]
+    for json_path in candidate_paths:
+        bak_file = json_path.with_suffix(".json.bak")
+        if bak_file.is_file():
+            try:
+                shutil.copy2(bak_file, json_path)
+            except Exception:
+                pass
+
+
+def get_next_run_time_from_scheduler() -> Optional[str]:
+    """
+    Read the next scheduled run time from Windows Task Scheduler for '\100B Daily Video Bot',
+    converting from system local time to America/New_York ISO format.
+    """
+    if os.name != "nt":
+        return None
+    try:
+        import subprocess
+        proc = subprocess.run(
+            ["schtasks", "/query", "/tn", r"\100B Daily Video Bot", "/fo", "LIST"],
+            capture_output=True,
+            text=True,
+            timeout=3,
+        )
+        if proc.returncode == 0:
+            for line in proc.stdout.splitlines():
+                if line.strip().startswith("Next Run Time:"):
+                    val = line.split(":", 1)[1].strip()
+                    # e.g., '17-11-2026 18:00:00'
+                    try:
+                        dt_local = datetime.strptime(val, "%d-%m-%Y %H:%M:%S").replace(
+                            tzinfo=datetime.now().astimezone().tzinfo
+                        )
+                        dt_ny = dt_local.astimezone(ZoneInfo("America/New_York"))
+                        return dt_ny.isoformat()
+                    except Exception:
+                        pass
+    except Exception:
+        pass
+    return None
+
+
 def get_pipeline_status() -> Dict[str, Any]:
     """Return last run info from daily_runs and next run time."""
     with get_ro_connection() as conn:
@@ -163,17 +278,22 @@ def get_pipeline_status() -> Dict[str, Any]:
         }
 
     # Channel timezone (America/New_York)
-    tz = ZoneInfo("America/New_York")
-    now_ny = datetime.now(tz)
-    # Next daily run is scheduled at 18:00 (6:00 PM) channel time
-    next_run_dt = now_ny.replace(hour=18, minute=0, second=0, microsecond=0)
-    if now_ny >= next_run_dt:
+    scheduler_next_run = get_next_run_time_from_scheduler()
+    if scheduler_next_run:
+        next_run_iso = scheduler_next_run
+    else:
+        # Fallback: daily run is at 18:00 IST = 07:30 AM New York time
         from datetime import timedelta
-        next_run_dt += timedelta(days=1)
+        tz = ZoneInfo("America/New_York")
+        now_ny = datetime.now(tz)
+        next_run_dt = now_ny.replace(hour=7, minute=30, second=0, microsecond=0)
+        if now_ny >= next_run_dt:
+            next_run_dt += timedelta(days=1)
+        next_run_iso = next_run_dt.isoformat()
 
     return {
         "last_run": last_run,
-        "next_run_time": next_run_dt.isoformat(),
+        "next_run_time": next_run_iso,
         "channel_timezone": "America/New_York",
     }
 
@@ -420,6 +540,8 @@ def get_agent_day_detail(target_date: str) -> Dict[str, Any]:
         except sqlite3.OperationalError:
             pass
 
+        has_next_date_lineup = bool(lineup_rows)
+
         # Fallback if no rows found for next_date: check target_date itself
         if not lineup_rows:
             try:
@@ -440,7 +562,7 @@ def get_agent_day_detail(target_date: str) -> Dict[str, Any]:
             except sqlite3.OperationalError:
                 lineup_rows = []
 
-        lineup_target_date = next_date if lineup_rows else target_date
+        lineup_target_date = next_date if has_next_date_lineup else target_date
 
         # Format time_display in America/New_York (ET)
         for idx, r in enumerate(lineup_rows):

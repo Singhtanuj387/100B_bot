@@ -217,20 +217,8 @@ async def update_schedule(request: Request, body: ScheduleUpdateRequest):
     minutes_list.sort()
     sorted_slots = [minutes_to_hhmm(m) for m in minutes_list]
 
-    # Save to agent/config.yaml using ruamel.yaml
+    # Read current agent config to inspect existing values and preserve comments
     agent_yaml, agent_cfg = read_yaml_preserving_comments(AGENT_CONFIG_PATH)
-    agent_cfg["target_count"] = videos_per_day
-    agent_cfg["peak_hours"] = sorted_slots
-    write_yaml_atomically(AGENT_CONFIG_PATH, agent_yaml, agent_cfg)
-
-    # Save to uploader/config.yaml: keep max_uploads_per_day equal to videos_per_day
-    uploader_yaml, uploader_cfg = read_yaml_preserving_comments(UPLOADER_CONFIG_PATH)
-    if "upload" not in uploader_cfg:
-        uploader_cfg["upload"] = {}
-    uploader_cfg["upload"]["max_uploads_per_day"] = videos_per_day
-    write_yaml_atomically(UPLOADER_CONFIG_PATH, uploader_yaml, uploader_cfg)
-
-    # Check for tomorrow's scheduled clips and handle retiming
     tz_name = agent_cfg.get("timezone", "America/New_York")
     tz = ZoneInfo(tz_name)
     now_ny = datetime.now(tz)
@@ -238,66 +226,161 @@ async def update_schedule(request: Request, body: ScheduleUpdateRequest):
     tomorrow_str = tomorrow_dt.strftime("%Y-%m-%d")
     tomorrow_day_name = tomorrow_dt.strftime("%A")
 
+    current_target_count = int(agent_cfg.get("target_count", 0))
+    raw_peaks = agent_cfg.get("peak_hours", [])
+    current_slots = []
+    for p in raw_peaks:
+        try:
+            if isinstance(p, int):
+                current_slots.append(f"{p:02d}:00")
+            elif isinstance(p, str):
+                if ":" in p:
+                    parts = p.split(":")
+                    current_slots.append(f"{int(parts[0]):02d}:{int(parts[1]):02d}")
+                else:
+                    current_slots.append(f"{int(p):02d}:00")
+        except Exception:
+            pass
+    current_slots = sorted(set(current_slots), key=lambda x: parse_hhmm_to_minutes(x))
+
+    # A no-change save must do nothing: no YouTube calls and no config rewrite
+    if videos_per_day == current_target_count and sorted_slots == current_slots:
+        return {
+            "status": "success",
+            "videos_per_day": videos_per_day,
+            "slots": sorted_slots,
+            "retimed_count": 0,
+            "can_retime": has_manage_scope(),
+            "notice": "No changes to schedule.",
+        }
+
+    # Query tomorrow's scheduled uploads directly from uploads table (deduplicated)
+    scheduled_clips = []
+    with get_ro_connection() as conn:
+        try:
+            cur = conn.execute("""
+                SELECT DISTINCT u.post_id, u.video_id, u.slot_time, u.publish_at
+                FROM uploads u
+                WHERE u.target_date = ? AND u.status = 'scheduled' AND u.video_id IS NOT NULL
+                ORDER BY u.slot_time ASC
+            """, (tomorrow_str,))
+            scheduled_clips = [dict(r) for r in cur.fetchall()]
+        except Exception:
+            scheduled_clips = []
+
+    # Pair each clip to its own slot (by post_id and uploaded slot), only changing clips that actually moved
+    clips_to_retime = []
+    for clip in scheduled_clips:
+        vid_id = clip["video_id"]
+        post_id = clip["post_id"]
+        raw_time = clip.get("slot_time") or ""
+        dt_et = None
+        try:
+            if raw_time:
+                dt_et = datetime.fromisoformat(raw_time).astimezone(tz)
+            elif clip.get("publish_at"):
+                dt_et = datetime.fromisoformat(clip["publish_at"].replace("Z", "+00:00")).astimezone(tz)
+        except Exception:
+            pass
+
+        if not dt_et:
+            continue
+
+        uploaded_hhmm = f"{dt_et.hour:02d}:{dt_et.minute:02d}"
+
+        # Match slot by index in current_slots or index in scheduled_clips
+        if uploaded_hhmm in current_slots:
+            slot_idx = current_slots.index(uploaded_hhmm)
+        else:
+            try:
+                slot_idx = scheduled_clips.index(clip)
+            except ValueError:
+                continue
+
+        if slot_idx >= len(sorted_slots):
+            continue
+
+        target_hhmm = sorted_slots[slot_idx]
+        if target_hhmm == uploaded_hhmm:
+            # Clip did not move: leave unchanged
+            continue
+
+        th, tm = int(target_hhmm.split(":")[0]), int(target_hhmm.split(":")[1])
+        new_dt = tomorrow_dt.replace(hour=th, minute=tm, second=0, microsecond=0)
+        if new_dt <= now_ny:
+            continue
+
+        new_dt_utc = new_dt.astimezone(timezone.utc)
+        new_publish_at_rfc3339 = new_dt_utc.strftime("%Y-%m-%dT%H:%M:%SZ")
+        new_slot_time_iso = new_dt.isoformat()
+
+        clips_to_retime.append({
+            "post_id": post_id,
+            "video_id": vid_id,
+            "old_slot_hour": dt_et.hour,
+            "old_slot_time": raw_time,
+            "old_publish_at": clip.get("publish_at"),
+            "slot_hour": th,
+            "slot_time": new_slot_time_iso,
+            "publish_at": new_publish_at_rfc3339,
+            "target_slot_hhmm": target_hhmm,
+        })
+
     can_retime = has_manage_scope()
     retimed_count = 0
-    retimed_items = []
 
-    if can_retime:
-        # Check if tomorrow has scheduled uploads in database
-        with get_ro_connection() as conn:
-            try:
-                cur = conn.execute("""
-                    SELECT u.video_id, u.post_id, u.publish_at, COALESCE(s.slot_time, u.slot_time) as slot_time
-                    FROM uploads u
-                    LEFT JOIN schedule s ON u.post_id = s.post_id AND u.target_date = s.target_date
-                    WHERE u.target_date = ? AND u.status = 'scheduled' AND u.video_id IS NOT NULL
-                    ORDER BY COALESCE(s.slot_time, u.slot_time) ASC
-                """, (tomorrow_str,))
-                scheduled_clips = [dict(r) for r in cur.fetchall()]
-            except Exception:
-                scheduled_clips = []
+    if can_retime and clips_to_retime:
+        # Step 1: Local write in transaction first
+        backend_db.update_local_retimed_data(
+            target_date=tomorrow_str,
+            retimed_items=clips_to_retime,
+            db_path=backend_db.DB_PATH,
+            data_dir=SCHEDULE_DATA_DIR,
+        )
 
-        if scheduled_clips:
-            # Pair available scheduled clips with new sorted slots
-            for idx, clip in enumerate(scheduled_clips):
-                if idx < len(sorted_slots):
-                    vid_id = clip["video_id"]
-                    post_id = clip["post_id"]
-                    slot_hhmm = sorted_slots[idx]
-                    h, m = int(slot_hhmm.split(":")[0]), int(slot_hhmm.split(":")[1])
-                    new_dt = tomorrow_dt.replace(hour=h, minute=m, second=0, microsecond=0)
-                    # If new time is still in future
-                    if new_dt > now_ny:
-                        # RFC 3339 format for YouTube API in UTC
-                        new_dt_utc = new_dt.astimezone(timezone.utc)
-                        new_publish_at_rfc3339 = new_dt_utc.strftime("%Y-%m-%dT%H:%M:%SZ")
-                        new_slot_time_iso = new_dt.isoformat()
+        # Step 2: Call YouTube API for moved clips
+        youtube_updated = []
+        youtube_failed = False
+        for item in clips_to_retime:
+            ok = update_video_publish_time(item["video_id"], item["publish_at"])
+            if ok:
+                youtube_updated.append(item)
+            else:
+                youtube_failed = True
+                break
 
-                        success = update_video_publish_time(vid_id, new_publish_at_rfc3339)
-                        if success:
-                            retimed_count += 1
-                            retimed_items.append({
-                                "post_id": post_id,
-                                "video_id": vid_id,
-                                "slot_hour": h,
-                                "slot_time": new_slot_time_iso,
-                                "publish_at": new_publish_at_rfc3339,
-                            })
+        # Step 3: Roll back everything if any YouTube call fails
+        if youtube_failed:
+            for item in youtube_updated:
+                update_video_publish_time(item["video_id"], item["old_publish_at"])
+            backend_db.rollback_local_retimed_data(
+                target_date=tomorrow_str,
+                retimed_items=clips_to_retime,
+                db_path=backend_db.DB_PATH,
+                data_dir=SCHEDULE_DATA_DIR,
+            )
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Failed to update publish time on YouTube. All local and remote changes were safely rolled back.",
+            )
 
-            # Controlled write to local DB and schedule.json after successful videos.update
-            if retimed_items:
-                update_local_retimed_data(
-                    target_date=tomorrow_str,
-                    retimed_items=retimed_items,
-                    db_path=backend_db.DB_PATH,
-                    data_dir=SCHEDULE_DATA_DIR,
-                )
-
-            notice = f"{tomorrow_day_name}’s {len(scheduled_clips)} clips are already scheduled on YouTube. Saving moves them to the new times."
-        else:
-            notice = f"Schedule saved! {videos_per_day} slots will take effect on the next daily run."
-    else:
+        retimed_count = len(clips_to_retime)
+        notice = f"{tomorrow_day_name}’s {retimed_count} moved clips were retimed on YouTube and saved."
+    elif not can_retime and clips_to_retime:
         notice = "New times saved for future runs only. To retime existing scheduled clips on YouTube, run: python upload.py auth --manage"
+    else:
+        notice = f"Schedule saved! {videos_per_day} slots will take effect on the next daily run."
+
+    # Step 4: Write updated configs with ruamel.yaml preserving comments atomically
+    agent_cfg["target_count"] = videos_per_day
+    agent_cfg["peak_hours"] = sorted_slots
+    write_yaml_atomically(AGENT_CONFIG_PATH, agent_yaml, agent_cfg)
+
+    uploader_yaml, uploader_cfg = read_yaml_preserving_comments(UPLOADER_CONFIG_PATH)
+    if "upload" not in uploader_cfg:
+        uploader_cfg["upload"] = {}
+    uploader_cfg["upload"]["max_uploads_per_day"] = videos_per_day
+    write_yaml_atomically(UPLOADER_CONFIG_PATH, uploader_yaml, uploader_cfg)
 
     return {
         "status": "success",
