@@ -263,10 +263,44 @@ Seed the `claims` table with the two known incidents:
 
 ---
 
-## 8. Questions & Decisions for Approval
+## 8. Implementation Status & Verification Summary
 
-Before implementing code or enabling services, please confirm:
-1. **Audio Fingerprinting Provider**: Do you approve using **AudD** (300 free requests, no credit card required) as the default provider, with pluggable support for **ACRCloud**?
-2. **Google Cloud Vision**: Do you already have Google Cloud Vision credentials / API key available, or should the system run in **Local-Only Mode** until you provide them?
-3. **Unreviewed Policy Default**: Should `rights.unreviewed_policy` default to `publish` (normal upload flow) or `hold` (auto-privatize at T-30m if unreviewed)?
-4. **Telegram Alerts**: Do you want Telegram alerts enabled for `needs_check` reminders (if bot token and chat ID are provided in `.env`), or should it log to `logs/rights_alerts.log` for now?
+All Phase 6 components have been implemented, verified, and committed:
+
+1. **Layer 1 (Agency & Source Blocklist)**:
+   - Config: [agent/config/agency_blocklist.yaml](file:///C:/Drive-D/python%20tut/100B/agent/config/agency_blocklist.yaml)
+   - Fuzzy matching with typo tolerance (1-2 typos) and punctuation/spacing insensitivity.
+   - Local OCR via `rapidocr-onnxruntime` on 5 sampled frames.
+   - Watermark rule: hard blocks social watermark text only if in corner or 2+ frames, otherwise flags for review.
+
+2. **Layer 2 (Audio Check)**:
+   - Local YAMNet ONNX model for zero-cost music detection.
+   - AudD pluggable provider: 1 sample first, 2nd sample only if unrecognized and music_fraction >= 0.60.
+   - Strict daily cap of 40 calls enforced.
+
+3. **Layer 3 (Visual Match Check)**:
+   - Google Cloud Vision API with `WEB_DETECTION` on 2 raw keyframes.
+   - Runs in Local-Only mode by default; daily cap of 25 calls and budget alert threshold at 800 units/mo.
+
+4. **Layer 4 (YouTube Review Gate & Actions)**:
+   - `unreviewed_policy: hold` for first 14 days: uploaded private without publishAt.
+   - "Mark Clear" sets publishAt or assigns next free slot if passed.
+   - Desktop Windows WinRT toast notification + alerts log in `agent/logs/rights_alerts.log`.
+   - Safe transactional Pull-and-Replace from reserve pool with rollback on failure.
+
+5. **Layer 5 (Learn From Claims)**:
+   - Database table `claims` seeded with `reddit_1xv7kmf` (CollabDRM visual) and `reddit_1xrfauk` (SME audio).
+   - Near-duplicate perceptual hashing (< 8 Hamming distance) blocks future occurrences.
+   - Auto-suggested blocklist entries populated for manual UI approval in `rights_blocklist`.
+
+6. **Dashboard & UI**:
+   - New **Claims** screen (`ClaimsView.tsx`) with protection status cards, needs-review queue, recently published (7 days) list (Keep, Make private, typed DELETE), claims history, and learned blocklist manager.
+   - Warning modal on "disputed" action.
+   - YouTube screen: `Claimed`, `Held`, and `Needs Check` badges displayed on rundown rows and player sidebar.
+   - Agent screen: Rejection reasons chart updated with `rights_agency`, `rights_music`, `rights_visual_match`, `rights_history`, and `rights_social_watermark`.
+
+7. **Verification**:
+   - `python rights_check.py --backtest`: evaluated 13 historical clips, accurately blocked `reddit_1xrfauk` and flagged `reddit_1xv7kmf`.
+   - `npm run test` (Frontend Vitest): 17/17 tests passed.
+   - `npm run build` (Vite production bundle): built cleanly in 1.13s with zero errors.
+   - `python -m pytest agent/tests dashboard/tests`: all 125 backend tests passed.
