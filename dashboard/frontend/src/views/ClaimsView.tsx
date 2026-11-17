@@ -52,10 +52,18 @@ interface PublishedClip {
   slot_time?: string;
   title: string;
   privacy: string;
+  live_privacy?: string;
+  live_status?: string;
+  is_missing?: boolean;
   claim_status: string;
+  claim_action?: string;
+  claimant?: string;
+  claim_type?: string;
   rights_status?: string;
   rights_risk: number;
   thumb_url: string;
+  views?: number;
+  likes?: number;
 }
 
 interface ClaimRecord {
@@ -636,83 +644,112 @@ export const ClaimsView: React.FC = () => {
                   </td>
                 </tr>
               ) : (
-                publishedClips.map((clip) => (
-                  <tr key={clip.post_id} className="hover:bg-gray-50 transition-colors">
-                    <td className="py-[12px] font-medium text-[#1D3B33] whitespace-nowrap">
-                      {formatDateET(clip.target_date, { month: 'short', day: 'numeric' })} · {formatTimeET(clip.slot_time)}
-                    </td>
-                    <td className="py-[12px]">
-                      <div className="flex items-center gap-[12px]">
-                        <Thumb src={clip.thumb_url} alt={stripHashtags(clip.title)} />
-                        <div className="flex flex-col min-w-0 max-w-[340px]">
-                          <span className="font-semibold text-[#1D3B33] truncate">
-                            {stripHashtags(clip.title)}
-                          </span>
-                          <span className="text-[12px] text-[#6F7A73] truncate">
-                            {clip.post_id} {clip.video_id ? `· ${clip.video_id}` : ''}
-                          </span>
+                publishedClips.map((clip) => {
+                  const isMissing = Boolean(
+                    clip.is_missing ||
+                    clip.privacy === 'missing' ||
+                    clip.live_privacy === 'missing' ||
+                    clip.live_status === 'missing'
+                  );
+                  const privacy = clip.live_privacy || clip.privacy || 'private';
+
+                  return (
+                    <tr key={clip.post_id} className="hover:bg-gray-50 transition-colors">
+                      <td className="py-[12px] font-medium text-[#1D3B33] whitespace-nowrap">
+                        {formatDateET(clip.target_date, { month: 'short', day: 'numeric' })} · {formatTimeET(clip.slot_time)}
+                      </td>
+                      <td className="py-[12px]">
+                        <div className="flex items-center gap-[12px]">
+                          <Thumb src={clip.thumb_url} alt={stripHashtags(clip.title)} />
+                          <div className="flex flex-col min-w-0 max-w-[340px]">
+                            <span className="font-semibold text-[#1D3B33] truncate">
+                              {stripHashtags(clip.title)}
+                            </span>
+                            <div className="flex items-center gap-[6px] text-[12px] text-[#6F7A73] truncate">
+                              <span>{clip.post_id}</span>
+                              {clip.video_id && <span>· {clip.video_id}</span>}
+                              {isMissing && (
+                                <span className="text-[#D4412F] font-semibold">· Missing on YouTube</span>
+                              )}
+                            </div>
+                          </div>
                         </div>
-                      </div>
-                    </td>
-                    <td className="py-[12px]">
-                      <span className={`px-[8px] py-[2px] rounded text-[11px] font-bold uppercase tracking-wider ${
-                        clip.privacy === 'public'
-                          ? 'bg-[#2E7D4F]/15 text-[#2E7D4F]'
-                          : 'bg-[#D97706]/15 text-[#D97706]'
-                      }`}>
-                        {clip.privacy || 'private'}
-                      </span>
-                    </td>
-                    <td className="py-[12px]">
-                      {clip.claim_status === 'claimed' ? (
-                        <span className="px-[8px] py-[2px] rounded text-[11px] font-bold bg-[#D4412F]/15 text-[#D4412F] border border-[#D4412F]/30">
-                          Claimed
-                        </span>
-                      ) : (
-                        <span className="text-[#6F7A73] text-[12px]">Clean</span>
-                      )}
-                    </td>
-                    <td className="py-[12px] text-right whitespace-nowrap">
-                      <div className="flex items-center justify-end gap-[8px]">
-                        {clip.video_id && (
-                          <a
-                            href={`https://studio.youtube.com/video/${clip.video_id}/edit`}
-                            target="_blank"
-                            rel="noreferrer"
-                            className="p-[6px] rounded-[6px] border border-[#D5DBD5] text-[#1D3B33] hover:bg-gray-100"
-                            title="Studio"
-                          >
-                            <ExternalLink size={14} />
-                          </a>
+                      </td>
+                      <td className="py-[12px]">
+                        {isMissing ? (
+                          <span className="px-[8px] py-[2px] rounded text-[11px] font-bold uppercase tracking-wider bg-gray-200 text-gray-700 border border-gray-300">
+                            Missing
+                          </span>
+                        ) : (
+                          <span className={`px-[8px] py-[2px] rounded text-[11px] font-bold uppercase tracking-wider ${
+                            privacy === 'public'
+                              ? 'bg-[#2E7D4F]/15 text-[#2E7D4F]'
+                              : privacy === 'unlisted'
+                              ? 'bg-blue-100 text-blue-700'
+                              : 'bg-[#D97706]/15 text-[#D97706]'
+                          }`}>
+                            {privacy}
+                          </span>
                         )}
+                      </td>
+                      <td className="py-[12px]">
+                        {clip.claim_status === 'claimed' ? (
+                          <span className="px-[8px] py-[2px] rounded text-[11px] font-bold bg-[#D4412F]/15 text-[#D4412F] border border-[#D4412F]/30">
+                            Claimed{clip.claim_action ? ` (${clip.claim_action})` : ''}
+                          </span>
+                        ) : (
+                          <span className="text-[#6F7A73] text-[12px]">Clean</span>
+                        )}
+                      </td>
+                      <td className="py-[12px] text-right whitespace-nowrap">
+                        <div className="flex items-center justify-end gap-[8px]">
+                          {clip.video_id && !isMissing && (
+                            <a
+                              href={`https://studio.youtube.com/video/${clip.video_id}/edit`}
+                              target="_blank"
+                              rel="noreferrer"
+                              className="p-[6px] rounded-[6px] border border-[#D5DBD5] text-[#1D3B33] hover:bg-gray-100"
+                              title="Studio"
+                            >
+                              <ExternalLink size={14} />
+                            </a>
+                          )}
 
-                        <button
-                          onClick={() => handlePublishedAction(clip.post_id, clip.video_id, 'keep')}
-                          className="px-[8px] py-[4px] rounded-[6px] border border-[#D5DBD5] text-[#1D3B33] text-[12px] font-semibold hover:bg-gray-100 cursor-pointer"
-                        >
-                          Keep
-                        </button>
+                          <button
+                            onClick={() => handlePublishedAction(clip.post_id, clip.video_id, 'keep')}
+                            disabled={actionLoading}
+                            className="px-[8px] py-[4px] rounded-[6px] border border-[#D5DBD5] text-[#1D3B33] text-[12px] font-semibold hover:bg-gray-100 cursor-pointer"
+                          >
+                            Keep
+                          </button>
 
-                        <button
-                          onClick={() => handlePublishedAction(clip.post_id, clip.video_id, 'make_private')}
-                          className="px-[8px] py-[4px] rounded-[6px] bg-[#D97706]/15 border border-[#D97706]/30 text-[#D97706] text-[12px] font-semibold hover:bg-[#D97706]/25 cursor-pointer"
-                        >
-                          Make Private
-                        </button>
+                          <button
+                            onClick={() => handlePublishedAction(clip.post_id, clip.video_id, 'make_private')}
+                            disabled={actionLoading || isMissing || privacy === 'private'}
+                            className={`px-[8px] py-[4px] rounded-[6px] text-[12px] font-semibold ${
+                              isMissing || privacy === 'private'
+                                ? 'opacity-40 cursor-not-allowed bg-gray-100 text-gray-400 border border-gray-200'
+                                : 'bg-[#D97706]/15 border border-[#D97706]/30 text-[#D97706] hover:bg-[#D97706]/25 cursor-pointer'
+                            }`}
+                          >
+                            Make Private
+                          </button>
 
-                        <button
-                          onClick={() => {
-                            setDeleteModalClip(clip);
-                            setDeleteModalConfirm('');
-                          }}
-                          className="px-[8px] py-[4px] rounded-[6px] bg-[#D4412F]/10 border border-[#D4412F]/30 text-[#D4412F] text-[12px] font-semibold hover:bg-[#D4412F]/20 cursor-pointer"
-                        >
-                          Delete
-                        </button>
-                      </div>
-                    </td>
-                  </tr>
-                ))
+                          <button
+                            onClick={() => {
+                              setDeleteModalClip(clip);
+                              setDeleteModalConfirm('');
+                            }}
+                            disabled={actionLoading}
+                            className="px-[8px] py-[4px] rounded-[6px] bg-[#D4412F]/10 border border-[#D4412F]/30 text-[#D4412F] text-[12px] font-semibold hover:bg-[#D4412F]/20 cursor-pointer"
+                          >
+                            Delete
+                          </button>
+                        </div>
+                      </td>
+                    </tr>
+                  );
+                })
               )}
             </tbody>
           </table>
@@ -1066,11 +1103,14 @@ export const ClaimsView: React.FC = () => {
         <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-[16px] backdrop-blur-xs">
           <div className="bg-white rounded-[16px] max-w-[460px] w-full p-[24px] lg:p-[32px] flex flex-col gap-[16px] shadow-xl">
             <h3 className="font-heading font-semibold text-[20px] text-[#D4412F]">
-              Confirm Video Deletion
+              {deleteModalClip.is_missing ? 'Remove Missing Clip Record' : 'Confirm Video Deletion'}
             </h3>
             <p className="font-ui text-[13px] text-[#6F7A73]">
-              Are you sure you want to permanently delete <strong>{deleteModalClip.title}</strong> from YouTube?
-              This cannot be undone.
+              {deleteModalClip.is_missing ? (
+                <>This video is already missing/deleted from YouTube. Type <strong>DELETE</strong> to remove this record from the database.</>
+              ) : (
+                <>Are you sure you want to permanently delete <strong>{deleteModalClip.title}</strong> from YouTube? This cannot be undone.</>
+              )}
             </p>
             <div className="flex flex-col gap-[6px]">
               <label className="font-ui text-[12px] font-semibold text-[#D4412F]">
@@ -1098,7 +1138,7 @@ export const ClaimsView: React.FC = () => {
                 onClick={() => handlePublishedAction(deleteModalClip.post_id, deleteModalClip.video_id, 'delete')}
                 className="px-[16px] py-[8px] rounded-[8px] bg-[#D4412F] text-white text-[13px] font-semibold hover:bg-[#b83424] disabled:opacity-50 cursor-pointer"
               >
-                Delete Video
+                {deleteModalClip.is_missing ? 'Remove Record' : 'Delete Video'}
               </button>
             </div>
           </div>

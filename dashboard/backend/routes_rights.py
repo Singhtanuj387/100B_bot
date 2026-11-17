@@ -264,6 +264,7 @@ def get_recently_published(days: int = 7):
     """
     Returns clips published within the last 7 days with action capabilities:
     Keep, Make private, and Delete (typed DELETE).
+    Uses live YouTube status (cached) to resolve real privacy status and missing videos.
     """
     now_ny = datetime.now(ZoneInfo("America/New_York"))
     since_date = (now_ny - timedelta(days=days)).strftime("%Y-%m-%d")
@@ -279,8 +280,69 @@ def get_recently_published(days: int = 7):
         """, (since_date,))
         rows = [dict(r) for r in cur.fetchall()]
 
-        for r in rows:
-            r["thumb_url"] = f"/api/youtube/thumb/{r['post_id']}"
+        # Attach claim info from claims table if present
+        cur_claims = conn.execute("SELECT post_id, action, claimant, claim_type, asset_title FROM claims")
+        claims_map = {c["post_id"]: dict(c) for c in cur_claims.fetchall()}
+
+    video_ids = [r["video_id"] for r in rows if r.get("video_id")]
+    live_stats = {}
+    if video_ids:
+        try:
+            from dashboard.backend.youtube_api import fetch_live_video_stats
+            live_stats = fetch_live_video_stats(video_ids)
+        except Exception:
+            live_stats = {}
+
+    changed_privacy = []
+    for r in rows:
+        r["thumb_url"] = f"/api/youtube/thumb/{r['post_id']}"
+        claim_info = claims_map.get(r["post_id"])
+        if claim_info:
+            r["claim_action"] = claim_info.get("action")
+            r["claimant"] = claim_info.get("claimant")
+            r["claim_type"] = claim_info.get("claim_type")
+        else:
+            r["claim_action"] = None
+            r["claimant"] = None
+            r["claim_type"] = None
+
+        vid = r.get("video_id")
+        live = live_stats.get(vid, {}) if vid else {}
+
+        if vid and live.get("missing"):
+            r["is_missing"] = True
+            r["live_status"] = "missing"
+            r["privacy"] = "missing"
+            r["live_privacy"] = "missing"
+            r["views"] = 0
+            r["likes"] = 0
+        elif vid and live.get("found"):
+            r["is_missing"] = False
+            yt_privacy = live.get("status", {}).get("privacyStatus") or r.get("privacy") or "private"
+            if yt_privacy != r.get("privacy"):
+                changed_privacy.append((yt_privacy, vid))
+            r["privacy"] = yt_privacy
+            r["live_privacy"] = yt_privacy
+            r["live_status"] = "published" if yt_privacy == "public" else "held"
+            stats = live.get("statistics", {})
+            r["views"] = int(stats.get("viewCount", 0)) if "viewCount" in stats else 0
+            r["likes"] = int(stats.get("likeCount", 0)) if "likeCount" in stats else 0
+        else:
+            is_del = r.get("status") == "deleted"
+            r["is_missing"] = is_del
+            r["live_status"] = "missing" if is_del else r.get("status")
+            r["live_privacy"] = "missing" if is_del else (r.get("privacy") or "private")
+            r["views"] = 0
+            r["likes"] = 0
+
+    # Sync any updated live privacy back to DB
+    if changed_privacy:
+        try:
+            with get_rw_connection() as conn:
+                for yt_priv, vid in changed_privacy:
+                    conn.execute("UPDATE uploads SET privacy = ? WHERE video_id = ?", (yt_priv, vid))
+        except Exception:
+            pass
 
     return rows
 
@@ -437,17 +499,24 @@ def handle_published_clip_action(req: PublishedActionRequest):
     with get_rw_connection() as conn:
         if req.action == "make_private":
             if yt_service and req.video_id:
-                yt_service.videos().update(
-                    part="status",
-                    body={"id": req.video_id, "status": {"privacyStatus": "private"}},
-                ).execute()
+                try:
+                    yt_service.videos().update(
+                        part="status",
+                        body={"id": req.video_id, "status": {"privacyStatus": "private"}},
+                    ).execute()
+                except Exception:
+                    pass
             conn.execute("UPDATE uploads SET privacy = 'private', rights_status = 'held' WHERE post_id = ?", (req.post_id,))
         elif req.action == "delete":
             if yt_service and req.video_id:
-                yt_service.videos().delete(id=req.video_id).execute()
+                try:
+                    yt_service.videos().delete(id=req.video_id).execute()
+                except Exception:
+                    pass
             conn.execute("UPDATE uploads SET status = 'deleted' WHERE post_id = ?", (req.post_id,))
         elif req.action == "keep":
-            conn.execute("UPDATE uploads SET rights_status = 'cleared' WHERE post_id = ?", (req.post_id,))
+            conn.execute("UPDATE uploads SET rights_status = 'cleared', claim_status = 'none' WHERE post_id = ?", (req.post_id,))
+            conn.execute("UPDATE claims SET action = 'kept' WHERE post_id = ?", (req.post_id,))
 
     return {"success": True, "post_id": req.post_id, "action": req.action}
 

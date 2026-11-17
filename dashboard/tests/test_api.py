@@ -2,6 +2,8 @@ import os
 import json
 import sqlite3
 import pytest
+from datetime import datetime
+from zoneinfo import ZoneInfo
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 from starlette.testclient import TestClient
@@ -1130,15 +1132,91 @@ def test_rights_write_security_guard(client, test_db_setup):
         assert resp_bad_host.status_code == 403, f"{endpoint} should return 403 for external host"
 
 
-def test_rights_claims_history_and_recent_published(client, test_db_setup):
+def test_rights_claims_history_and_recent_published(client, test_db_setup, monkeypatch):
     # 1. Claims history
     resp_hist = client.get("/api/rights/claims")
     assert resp_hist.status_code == 200
     hist_data = resp_hist.json()
     assert isinstance(hist_data, list)
 
-    # 2. Recent published
+    # 2. Setup mock live video stats
+    def mock_fetch_live(video_ids):
+        res = {}
+        for vid in video_ids:
+            if vid == "vid_live_public":
+                res[vid] = {
+                    "found": True,
+                    "missing": False,
+                    "status": {"privacyStatus": "public"},
+                    "statistics": {"viewCount": "42", "likeCount": "5"},
+                }
+            elif vid == "vid_live_missing":
+                res[vid] = {
+                    "found": False,
+                    "missing": True,
+                    "status": {},
+                    "statistics": {},
+                }
+            elif vid == "vid_live_private":
+                res[vid] = {
+                    "found": True,
+                    "missing": False,
+                    "status": {"privacyStatus": "private"},
+                    "statistics": {"viewCount": "0", "likeCount": "0"},
+                }
+        return res
+
+    import dashboard.backend.routes_rights as routes_rights
+    monkeypatch.setattr(routes_rights, "fetch_live_video_stats", mock_fetch_live, raising=False)
+    import dashboard.backend.youtube_api as yt_api
+    monkeypatch.setattr(yt_api, "fetch_live_video_stats", mock_fetch_live, raising=False)
+
+    # Insert test clips
+    today_str = datetime.now(ZoneInfo("America/New_York")).strftime("%Y-%m-%d")
+    conn = sqlite3.connect(str(test_db_setup))
+    conn.execute("""
+        INSERT OR REPLACE INTO uploads (post_id, target_date, slot_time, status, video_id, uploaded_at, privacy)
+        VALUES ('test_pub_1', ?, '12:00:00', 'uploaded', 'vid_live_public', '2026-11-16T12:00:00', 'private')
+    """, (today_str,))
+    conn.execute("""
+        INSERT OR REPLACE INTO uploads (post_id, target_date, slot_time, status, video_id, uploaded_at, privacy)
+        VALUES ('test_miss_1', ?, '14:00:00', 'scheduled', 'vid_live_missing', '2026-11-16T14:00:00', 'private')
+    """, (today_str,))
+    conn.execute("""
+        INSERT OR REPLACE INTO uploads (post_id, target_date, slot_time, status, video_id, uploaded_at, privacy)
+        VALUES ('test_priv_1', ?, '16:00:00', 'scheduled', 'vid_live_private', '2026-11-16T16:00:00', 'private')
+    """, (today_str,))
+    conn.commit()
+    conn.close()
+
+    # 3. Query Recent published
     resp_recent = client.get("/api/rights/published")
     assert resp_recent.status_code == 200
     recent_data = resp_recent.json()
     assert isinstance(recent_data, list)
+
+    items_by_pid = {r["post_id"]: r for r in recent_data}
+
+    # Verify public live status overrides DB 'private'
+    pub_item = items_by_pid.get("test_pub_1")
+    assert pub_item is not None
+    assert pub_item["privacy"] == "public"
+    assert pub_item["live_privacy"] == "public"
+    assert pub_item["live_status"] == "published"
+    assert pub_item["is_missing"] is False
+    assert pub_item["views"] == 42
+
+    # Verify missing live status sets is_missing and privacy="missing"
+    miss_item = items_by_pid.get("test_miss_1")
+    assert miss_item is not None
+    assert miss_item["privacy"] == "missing"
+    assert miss_item["live_privacy"] == "missing"
+    assert miss_item["live_status"] == "missing"
+    assert miss_item["is_missing"] is True
+
+    # Verify private live status
+    priv_item = items_by_pid.get("test_priv_1")
+    assert priv_item is not None
+    assert priv_item["privacy"] == "private"
+    assert priv_item["live_privacy"] == "private"
+    assert priv_item["is_missing"] is False
