@@ -52,10 +52,8 @@ agencies:
 
   - name: "Caters"
     aliases:
-      - "Caters"
       - "Caters News"
       - "Caters Clips"
-      - "catersnews.com"
     domains:
       - "catersnews.com"
 

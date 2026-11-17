@@ -137,7 +137,7 @@ class HistoryClaimsChecker:
         asset_title = (claim_data.get("asset_title") or "").strip()
         if asset_title:
             # Common agency indicators in asset titles (e.g. "Collab ViralHog - Female Pheasant...")
-            for ag in ("ViralHog", "Jukin", "Collab", "Storyful", "Newsflare", "Caters", "Barcroft", "Rumble"):
+            for ag in ("ViralHog", "Jukin", "Collab", "Storyful", "Newsflare", "Caters News", "Caters Clips", "Barcroft", "Rumble"):
                 if ag.lower() in asset_title.lower():
                     suggestions.append({
                         "type": "text",
