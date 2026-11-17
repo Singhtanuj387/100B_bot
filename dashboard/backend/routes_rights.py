@@ -6,7 +6,7 @@ from pathlib import Path
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 from typing import Dict, Any, Optional, List
-from fastapi import APIRouter, HTTPException, Header, Body
+from fastapi import APIRouter, HTTPException, Header, Body, Request, status, Depends
 from pydantic import BaseModel
 
 import sys
@@ -43,6 +43,33 @@ def load_rights_config() -> Dict[str, Any]:
         except Exception:
             pass
     return {}
+
+
+def verify_rights_write_security(request: Request):
+    """
+    Security Rule: Require Custom Header, JSON content-type, and Host check.
+    Matches the guard on the Schedule save route.
+    """
+    host = request.headers.get("host", "").lower()
+    if not (host.startswith("127.0.0.1") or host.startswith("localhost") or host.startswith("testserver")):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Forbidden: Host check failed. Requests must originate from localhost/127.0.0.1.",
+        )
+
+    content_type = request.headers.get("content-type", "")
+    if "application/json" not in content_type.lower():
+        raise HTTPException(
+            status_code=status.HTTP_415_UNSUPPORTED_MEDIA_TYPE,
+            detail="Unsupported Media Type: Content-Type must be application/json.",
+        )
+
+    custom_header = request.headers.get("x-dashboard-request") or request.headers.get("x-requested-with")
+    if not custom_header:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Missing security header: X-Dashboard-Request or X-Requested-With required.",
+        )
 
 
 class MarkClearRequest(BaseModel):
@@ -258,7 +285,7 @@ def get_recently_published(days: int = 7):
     return rows
 
 
-@router.post("/mark-clear")
+@router.post("/mark-clear", dependencies=[Depends(verify_rights_write_security)])
 def mark_clip_clear(req: MarkClearRequest):
     """
     Marks a scheduled clip cleared. Restores scheduled publishAt or assigns next free slot.
@@ -278,7 +305,7 @@ def mark_clip_clear(req: MarkClearRequest):
     return res
 
 
-@router.post("/mark-claimed")
+@router.post("/mark-claimed", dependencies=[Depends(verify_rights_write_security)])
 def mark_clip_claimed(req: MarkClaimedRequest):
     """
     Registers a Content ID claim against a video, auto-extracts blocklist suggestions,
@@ -351,7 +378,7 @@ def mark_clip_claimed(req: MarkClaimedRequest):
     }
 
 
-@router.post("/hold")
+@router.post("/hold", dependencies=[Depends(verify_rights_write_security)])
 def hold_clip(req: HoldRequest):
     """Sets video to private on YouTube and removes publishAt."""
     gate = YouTubeRightsGate(db_path=backend_db.DB_PATH)
@@ -366,7 +393,7 @@ def hold_clip(req: HoldRequest):
     return res
 
 
-@router.post("/replace-from-reserve")
+@router.post("/replace-from-reserve", dependencies=[Depends(verify_rights_write_security)])
 def replace_claimed_clip_from_reserve(req: ReplaceFromReserveRequest):
     """
     Safe transactional pull-and-replace from reserve pool.
@@ -390,7 +417,7 @@ def replace_claimed_clip_from_reserve(req: ReplaceFromReserveRequest):
     return res
 
 
-@router.post("/action-published")
+@router.post("/action-published", dependencies=[Depends(verify_rights_write_security)])
 def handle_published_clip_action(req: PublishedActionRequest):
     """
     Handle action on recently published clip: keep, make_private, delete.
@@ -453,7 +480,7 @@ def get_blocklist():
     }
 
 
-@router.post("/blocklist/{entry_id}/approve")
+@router.post("/blocklist/{entry_id}/approve", dependencies=[Depends(verify_rights_write_security)])
 def approve_blocklist_suggestion(entry_id: int):
     with get_rw_connection() as conn:
         cur = conn.execute("UPDATE rights_blocklist SET status = 'active' WHERE id = ?", (entry_id,))
@@ -462,7 +489,7 @@ def approve_blocklist_suggestion(entry_id: int):
     return {"success": True, "entry_id": entry_id, "status": "active"}
 
 
-@router.post("/blocklist/{entry_id}/dismiss")
+@router.post("/blocklist/{entry_id}/dismiss", dependencies=[Depends(verify_rights_write_security)])
 def dismiss_blocklist_suggestion(entry_id: int):
     with get_rw_connection() as conn:
         cur = conn.execute("UPDATE rights_blocklist SET status = 'disabled' WHERE id = ?", (entry_id,))
@@ -471,7 +498,7 @@ def dismiss_blocklist_suggestion(entry_id: int):
     return {"success": True, "entry_id": entry_id, "status": "disabled"}
 
 
-@router.post("/blocklist/{entry_id}/toggle")
+@router.post("/blocklist/{entry_id}/toggle", dependencies=[Depends(verify_rights_write_security)])
 def toggle_blocklist_entry(entry_id: int):
     with get_rw_connection() as conn:
         row = conn.execute("SELECT status FROM rights_blocklist WHERE id = ?", (entry_id,)).fetchone()
@@ -482,7 +509,7 @@ def toggle_blocklist_entry(entry_id: int):
     return {"success": True, "entry_id": entry_id, "status": new_status}
 
 
-@router.post("/blocklist/add")
+@router.post("/blocklist/add", dependencies=[Depends(verify_rights_write_security)])
 def add_manual_blocklist_entry(req: AddBlocklistRequest):
     with get_rw_connection() as conn:
         cur = conn.execute("""

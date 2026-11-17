@@ -143,7 +143,10 @@ export const ClaimsView: React.FC = () => {
       setActionLoading(true);
       const res = await fetch('/api/rights/mark-clear', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Dashboard-Request': '1',
+        },
         body: JSON.stringify({ post_id: postId }),
       });
       const data = await res.json();
@@ -163,7 +166,10 @@ export const ClaimsView: React.FC = () => {
       setActionLoading(true);
       const res = await fetch('/api/rights/hold', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Dashboard-Request': '1',
+        },
         body: JSON.stringify({ post_id: postId, video_id: videoId }),
       });
       const data = await res.json();
@@ -185,7 +191,10 @@ export const ClaimsView: React.FC = () => {
       setActionLoading(true);
       const res = await fetch('/api/rights/mark-claimed', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Dashboard-Request': '1',
+        },
         body: JSON.stringify({
           post_id: claimModalClip.post_id,
           video_id: claimModalClip.video_id,
@@ -220,7 +229,10 @@ export const ClaimsView: React.FC = () => {
       setActionLoading(true);
       const res = await fetch('/api/rights/replace-from-reserve', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Dashboard-Request': '1',
+        },
         body: JSON.stringify({
           post_id: replaceModalClip.post_id,
           action_on_claimed: replaceAction,
@@ -248,7 +260,10 @@ export const ClaimsView: React.FC = () => {
       setActionLoading(true);
       const res = await fetch('/api/rights/action-published', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Dashboard-Request': '1',
+        },
         body: JSON.stringify({
           post_id: postId,
           video_id: videoId,
@@ -271,17 +286,35 @@ export const ClaimsView: React.FC = () => {
   };
 
   const handleBlocklistApprove = async (id: number) => {
-    await fetch(`/api/rights/blocklist/${id}/approve`, { method: 'POST' });
+    await fetch(`/api/rights/blocklist/${id}/approve`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Dashboard-Request': '1',
+      },
+    });
     await loadAllData();
   };
 
   const handleBlocklistDismiss = async (id: number) => {
-    await fetch(`/api/rights/blocklist/${id}/dismiss`, { method: 'POST' });
+    await fetch(`/api/rights/blocklist/${id}/dismiss`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Dashboard-Request': '1',
+      },
+    });
     await loadAllData();
   };
 
   const handleBlocklistToggle = async (id: number) => {
-    await fetch(`/api/rights/blocklist/${id}/toggle`, { method: 'POST' });
+    await fetch(`/api/rights/blocklist/${id}/toggle`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Dashboard-Request': '1',
+      },
+    });
     await loadAllData();
   };
 
@@ -290,7 +323,10 @@ export const ClaimsView: React.FC = () => {
     if (!newBlockValue.trim()) return;
     await fetch('/api/rights/blocklist/add', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Dashboard-Request': '1',
+      },
       body: JSON.stringify({ type: newBlockType, value: newBlockValue.trim() }),
     });
     setNewBlockValue('');

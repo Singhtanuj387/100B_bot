@@ -1028,20 +1028,22 @@ def test_rights_review_queue_api(client, test_db_setup):
 
 
 def test_rights_mark_clear_and_held_api(client, test_db_setup):
+    headers = {"Content-Type": "application/json", "X-Dashboard-Request": "1"}
     # Test hold
-    resp_hold = client.post("/api/rights/hold", json={"post_id": "clip1"})
+    resp_hold = client.post("/api/rights/hold", json={"post_id": "clip1"}, headers=headers)
     assert resp_hold.status_code == 200
     data_hold = resp_hold.json()
     assert data_hold["success"] is True
 
     # Test mark-clear
-    resp_clear = client.post("/api/rights/mark-clear", json={"post_id": "clip1"})
+    resp_clear = client.post("/api/rights/mark-clear", json={"post_id": "clip1"}, headers=headers)
     assert resp_clear.status_code == 200
     data_clear = resp_clear.json()
     assert data_clear["success"] is True
 
 
 def test_rights_mark_claimed_and_blocklist_flow(client, test_db_setup):
+    headers = {"Content-Type": "application/json", "X-Dashboard-Request": "1"}
     # 1. Register a claim with suggested blocklist items
     claim_payload = {
         "post_id": "clip1",
@@ -1054,7 +1056,7 @@ def test_rights_mark_claimed_and_blocklist_flow(client, test_db_setup):
         "source_name": "r/Unexpected",
         "notes": "Test claim entry",
     }
-    resp = client.post("/api/rights/mark-claimed", json=claim_payload)
+    resp = client.post("/api/rights/mark-claimed", json=claim_payload, headers=headers)
     assert resp.status_code == 200
     res_data = resp.json()
     assert res_data["success"] is True
@@ -1072,7 +1074,7 @@ def test_rights_mark_claimed_and_blocklist_flow(client, test_db_setup):
     pending_id = bl_data["pending"][0]["id"]
 
     # 3. Approve suggestion into active blocklist
-    resp_action = client.post(f"/api/rights/blocklist/{pending_id}/approve")
+    resp_action = client.post(f"/api/rights/blocklist/{pending_id}/approve", headers=headers)
     assert resp_action.status_code == 200
     assert resp_action.json()["success"] is True
 
@@ -1080,6 +1082,52 @@ def test_rights_mark_claimed_and_blocklist_flow(client, test_db_setup):
     resp_bl_after = client.get("/api/rights/blocklist")
     active_ids = [e["id"] for e in resp_bl_after.json()["active"]]
     assert pending_id in active_ids
+
+
+def test_rights_write_security_guard(client, test_db_setup):
+    """
+    Verify security rules for rights write routes:
+    - Missing X-Dashboard-Request returns 400
+    - Non-JSON content-type returns 415
+    - Disallowed Host header returns 403
+    - Correct headers pass through
+    """
+    write_endpoints = [
+        ("POST", "/api/rights/mark-clear", {"post_id": "clip1"}),
+        ("POST", "/api/rights/hold", {"post_id": "clip1"}),
+        ("POST", "/api/rights/action-published", {"post_id": "clip1", "action": "keep"}),
+        ("POST", "/api/rights/blocklist/add", {"type": "text", "value": "test_agency"}),
+        ("POST", "/api/rights/blocklist/1/toggle", None),
+    ]
+
+    for method, endpoint, payload in write_endpoints:
+        # 1. Missing custom header -> 400
+        resp_no_header = client.request(
+            method,
+            endpoint,
+            json=payload,
+            headers={"Content-Type": "application/json"},
+        )
+        assert resp_no_header.status_code == 400, f"{endpoint} should return 400 when missing header"
+        assert "Missing security header" in resp_no_header.json()["detail"]
+
+        # 2. Non-JSON content type -> 415
+        resp_bad_ct = client.request(
+            method,
+            endpoint,
+            content="post_id=clip1",
+            headers={"Content-Type": "text/plain", "X-Dashboard-Request": "1"},
+        )
+        assert resp_bad_ct.status_code == 415, f"{endpoint} should return 415 for text/plain"
+
+        # 3. Disallowed Host header -> 403
+        resp_bad_host = client.request(
+            method,
+            endpoint,
+            json=payload,
+            headers={"Content-Type": "application/json", "X-Dashboard-Request": "1", "Host": "evil-origin.com"},
+        )
+        assert resp_bad_host.status_code == 403, f"{endpoint} should return 403 for external host"
 
 
 def test_rights_claims_history_and_recent_published(client, test_db_setup):
