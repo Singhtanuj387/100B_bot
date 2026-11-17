@@ -31,10 +31,25 @@ def levenshtein_distance(s1: str, s2: str) -> int:
     return previous_row[-1]
 
 
+def is_whole_word_match(text: str, alias: str) -> bool:
+    """
+    Check if alias appears as a whole word (or contiguous sequence of whole words) in text.
+    Handles punctuation, brackets, hyphens, and whitespace boundaries cleanly. Case-insensitive.
+    """
+    if not text or not alias:
+        return False
+    alias_words = [re.escape(w) for w in re.findall(r"[a-z0-9]+", alias.lower()) if w]
+    if not alias_words:
+        return False
+    pattern = r"\b" + r"[\s\-_/]*".join(alias_words) + r"\b"
+    return bool(re.search(pattern, text, re.IGNORECASE))
+
+
 def fuzzy_contains(haystack_norm: str, needle_norm: str, max_typos: int = 1) -> bool:
     """
     Check if needle_norm is contained within haystack_norm, allowing up to max_typos.
-    If needle_norm is short (< 5 chars), require exact substring match to avoid false positives.
+    Typos are allowed ONLY for longer names (needle_norm >= 8 chars).
+    If needle_norm < 8 chars, only exact substring match is allowed (no typos).
     """
     if not needle_norm or not haystack_norm:
         return False
@@ -44,10 +59,11 @@ def fuzzy_contains(haystack_norm: str, needle_norm: str, max_typos: int = 1) -> 
         return True
 
     n_len = len(needle_norm)
-    if n_len < 5 or max_typos <= 0:
+    # Rule: allow typos only for longer names (>= 8 characters)
+    if n_len < 8 or max_typos <= 0:
         return False
 
-    allowed_typos = 2 if (n_len >= 8 and max_typos >= 2) else 1
+    allowed_typos = 2 if (n_len >= 12 and max_typos >= 2) else 1
 
     # Sliding window across haystack
     h_len = len(haystack_norm)
@@ -86,6 +102,8 @@ class BlocklistMatcher:
     def check_agency_match(self, text: str) -> Optional[Tuple[str, str]]:
         """
         Check if any agency name or alias is matched in text.
+        - Names under 8 letters require whole-word matches and allow NO typos.
+        - Longer names (>= 8 letters) allow exact matches or up to 1-2 typos.
         Returns (agency_name, matched_alias) or None.
         """
         if not text:
@@ -99,13 +117,24 @@ class BlocklistMatcher:
             aliases = agency.get("aliases", [name])
             for alias in aliases:
                 norm_needle = normalize_text(alias)
-                if norm_needle and fuzzy_contains(norm_haystack, norm_needle, max_typos=2):
-                    return name, alias
+                if not norm_needle:
+                    continue
+
+                if len(norm_needle) < 8:
+                    # Rule: Require whole-word matches for names under 8 letters, no typos
+                    if is_whole_word_match(text, alias):
+                        return name, alias
+                else:
+                    # Rule: Longer names allow exact or typo matching
+                    if fuzzy_contains(norm_haystack, norm_needle, max_typos=2):
+                        return name, alias
         return None
 
     def check_social_match(self, text: str) -> Optional[Tuple[str, str]]:
         """
         Check if any social watermark name (TikTok, Instagram, etc.) is matched in text.
+        - Names under 8 letters require whole-word matches and allow NO typos.
+        - Longer names allow exact or typo matching.
         Returns (platform_name, matched_alias) or None.
         """
         if not text:
@@ -119,8 +148,15 @@ class BlocklistMatcher:
             aliases = platform.get("aliases", [name])
             for alias in aliases:
                 norm_needle = normalize_text(alias)
-                if norm_needle and fuzzy_contains(norm_haystack, norm_needle, max_typos=1):
-                    return name, alias
+                if not norm_needle:
+                    continue
+
+                if len(norm_needle) < 8:
+                    if is_whole_word_match(text, alias):
+                        return name, alias
+                else:
+                    if fuzzy_contains(norm_haystack, norm_needle, max_typos=1):
+                        return name, alias
         return None
 
     def check_domain_match(self, domain_or_url: str) -> Optional[str]:
@@ -160,7 +196,12 @@ class BlocklistMatcher:
                 return entry
             elif etype == "subreddit" and norm_sub == norm_val:
                 return entry
-            elif etype in ("text", "claimant", "track") and fuzzy_contains(norm_title, norm_val, max_typos=1):
-                return entry
+            elif etype in ("text", "claimant", "track"):
+                if len(norm_val) < 8:
+                    if is_whole_word_match(title, val):
+                        return entry
+                else:
+                    if fuzzy_contains(norm_title, norm_val, max_typos=1):
+                        return entry
 
         return None

@@ -45,10 +45,23 @@ def test_matcher_agency_matching():
     assert matcher.check_agency_match("Courtesy of Jukin Media") is not None
     assert matcher.check_agency_match("Storyful Rights Reserved") is not None
     assert matcher.check_agency_match("CollabDRM Content") is not None
+    assert matcher.check_agency_match("Collab Media video") is not None
+    assert matcher.check_agency_match("Barcroft Media video") is not None
 
-    # Typo tolerance (1-2 typos)
+    # Whole-word match for short names under 8 letters
+    assert matcher.check_agency_match("Video licensed by Caters") is not None
+    assert matcher.check_agency_match("Licensed by Jukin") is not None
+
+    # Typo tolerance allowed ONLY for longer names (>= 8 letters)
     assert matcher.check_agency_match("Licensed by ViralHogg") is not None
     assert matcher.check_agency_match("Storyfull News") is not None
+
+    # Prevented false blocks on short names / generic aliases
+    assert matcher.check_agency_match("Dad joking around") is None  # Jukin (< 8) does not typo match 'joking'
+    assert matcher.check_agency_match("Truly the best parking job") is None  # 'Truly' dropped as generic alias
+    assert matcher.check_agency_match("Waters rising") is None  # Caters (< 8) does not typo match 'waters'
+    assert matcher.check_agency_match("Capers") is None  # Caters (< 8) does not typo match 'capers'
+    assert matcher.check_agency_match("Collab with my dog") is None  # 'Collab' dropped as generic alias
 
     # Negative check (normal titles)
     assert matcher.check_agency_match("Dog catches a frisbee in the park") is None
