@@ -153,7 +153,7 @@ def get_rights_status():
         """)
         sub_rates = {r["source_name"]: r["cnt"] for r in cur_sub.fetchall()}
 
-    has_audd_key = bool(os.environ.get("AUDD_API_TOKEN"))
+    has_audd_key = bool(os.environ.get("AUDD_API_TOKEN") or os.environ.get("AUDD_API_KEY"))
     has_vision_key = bool(os.environ.get("GOOGLE_VISION_API_KEY"))
 
     active_layers = {

@@ -2,6 +2,7 @@ from pathlib import Path
 from fastapi import FastAPI, Request, status
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
+from dotenv import load_dotenv
 
 from dashboard.backend.routes_pipeline import router as pipeline_router
 from dashboard.backend.routes_agent import router as agent_router
@@ -9,6 +10,12 @@ from dashboard.backend.routes_schedule import router as schedule_router
 from dashboard.backend.routes_youtube import router as youtube_router
 from dashboard.backend.routes_rights import router as rights_router
 from dashboard.backend.db import WORKSPACE_DIR
+
+_env_path = WORKSPACE_DIR / ".env"
+if _env_path.is_file():
+    load_dotenv(dotenv_path=_env_path)
+else:
+    load_dotenv()
 
 FRONTEND_DIST = WORKSPACE_DIR / "dashboard" / "frontend" / "dist"
 

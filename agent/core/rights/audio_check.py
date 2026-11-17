@@ -8,6 +8,9 @@ import numpy as np
 from pathlib import Path
 from typing import Dict, Any, Optional, List, Tuple
 from loguru import logger
+from dotenv import load_dotenv
+
+load_dotenv()
 
 try:
     import onnxruntime as ort
@@ -149,7 +152,7 @@ class AudDProvider(AudioRecognitionProvider):
     """AudD.io commercial audio recognition provider."""
 
     def __init__(self, api_token: Optional[str] = None):
-        self.api_token = api_token or os.environ.get("AUDD_API_TOKEN", "")
+        self.api_token = api_token or os.environ.get("AUDD_API_TOKEN") or os.environ.get("AUDD_API_KEY") or ""
 
     def is_configured(self) -> bool:
         return bool(self.api_token and self.api_token.strip())
