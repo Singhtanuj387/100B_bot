@@ -18,6 +18,7 @@ import {
 interface TomorrowSlotItem {
   slot_time?: string;
   slot_hour?: number;
+  slot_hhmm?: string;
   post_id?: string;
   title?: string;
   uploader?: string;
@@ -248,6 +249,49 @@ export const ScheduleView: React.FC = () => {
     setVideosPerDay(savedCount);
     setError(null);
   };
+
+  // Pair tomorrow's clips to current slots:
+  // 1. Leave every clip whose slot time is unchanged
+  // 2. Match only leftover old clips to leftover new slots in order
+  const pairedTomorrowClips = React.useMemo(() => {
+    const assigned = new Map<number, TomorrowSlotItem>();
+    const claimedIndices = new Set<number>();
+    const leftoverClips: TomorrowSlotItem[] = [];
+
+    const getClipHHMM = (clip: TomorrowSlotItem): string => {
+      if (clip.slot_hhmm) return clip.slot_hhmm;
+      if (clip.slot_time) {
+        try {
+          const match = clip.slot_time.match(/T(\d{2}):(\d{2})/);
+          if (match) return `${match[1]}:${match[2]}`;
+        } catch {}
+      }
+      return `${(clip.slot_hour ?? 12).toString().padStart(2, '0')}:00`;
+    };
+
+    // First pass: match clips whose slot is unchanged in slots
+    for (const clip of tomorrowSlots) {
+      const clipTime = getClipHHMM(clip);
+      const matchIdx = slots.findIndex((s, i) => s === clipTime && !claimedIndices.has(i));
+      if (matchIdx !== -1) {
+        claimedIndices.add(matchIdx);
+        assigned.set(matchIdx, clip);
+      } else {
+        leftoverClips.push(clip);
+      }
+    }
+
+    // Second pass: match leftover clips to leftover slots in order
+    const leftoverSlotIndices = slots
+      .map((_, i) => i)
+      .filter((i) => !claimedIndices.has(i));
+
+    for (let i = 0; i < Math.min(leftoverClips.length, leftoverSlotIndices.length); i++) {
+      assigned.set(leftoverSlotIndices[i], leftoverClips[i]);
+    }
+
+    return slots.map((_, i) => assigned.get(i));
+  }, [slots, tomorrowSlots]);
 
   if (loading) {
     return (
@@ -546,8 +590,8 @@ export const ScheduleView: React.FC = () => {
 
         <div className="divide-y divide-[#D5DBD5]/60">
           {slots.map((slotTime, idx) => {
-            // Match with tomorrow's assigned clip if present
-            const assignedClip = tomorrowSlots[idx];
+            // Match with tomorrow's assigned clip: unchanged slots keep clip, moved slots pair leftover
+            const assignedClip = pairedTomorrowClips[idx];
 
             return (
               <div

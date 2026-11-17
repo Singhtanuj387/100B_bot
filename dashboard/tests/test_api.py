@@ -771,3 +771,90 @@ def test_put_schedule_rollback_on_youtube_failure(client, test_db_setup, tmp_pat
     assert up_1[1] == old_pub_1
     assert up_2[0] == old_slot_2
     assert up_2[1] == old_pub_2
+
+
+def test_put_schedule_move_one_slot_retimes_only_that_clip(client, test_db_setup, tmp_path, monkeypatch):
+    """
+    Test moving ONLY one slot (e.g. 12:00 to 22:00) retimes ONLY that one clip.
+    It must make exactly 1 YouTube call (12:00 clip to 22:00), leaving the other
+    5 clips (14:00, 17:00, 19:00, 20:00, 21:00) untouched.
+    """
+    from datetime import datetime, timedelta
+    from zoneinfo import ZoneInfo
+
+    tz = ZoneInfo("America/New_York")
+    now_ny = datetime.now(tz)
+    tomorrow_dt = now_ny + timedelta(days=1)
+    tomorrow_str = tomorrow_dt.strftime("%Y-%m-%d")
+
+    # 1. Config with 6 slots
+    agent_cfg = tmp_path / "agent_config.yaml"
+    uploader_cfg = tmp_path / "uploader_config.yaml"
+    agent_cfg.write_text(
+        "timezone: 'America/New_York'\ntarget_count: 6\npeak_hours: ['12:00', '14:00', '17:00', '19:00', '20:00', '21:00']\n",
+        encoding="utf-8"
+    )
+    uploader_cfg.write_text("upload:\n  max_uploads_per_day: 6\n", encoding="utf-8")
+
+    monkeypatch.setattr(routes_sched, "AGENT_CONFIG_PATH", agent_cfg)
+    monkeypatch.setattr(routes_sched, "UPLOADER_CONFIG_PATH", uploader_cfg)
+
+    # 2. Insert 6 clips for tomorrow
+    conn = sqlite3.connect(str(test_db_setup))
+    hours = [12, 14, 17, 19, 20, 21]
+    for h in hours:
+        pid = f"clip_{h}"
+        st = f"{tomorrow_str}T{h:02d}:00:00-05:00"
+        pub = f"{tomorrow_str}T{h+5:02d}:00:00Z" if h + 5 < 24 else f"{tomorrow_str}T{h+5-24:02d}:00:00Z"
+        conn.execute("""
+            INSERT OR REPLACE INTO uploads (post_id, target_date, slot_time, status, video_id, uploaded_at, privacy, publish_at)
+            VALUES (?, ?, ?, 'scheduled', ?, '2026-11-16T18:00:00', 'private', ?);
+        """, (pid, tomorrow_str, st, f"yt_{pid}", pub))
+        conn.execute("""
+            INSERT OR REPLACE INTO schedule (target_date, slot_hour, slot_time, post_id, video_path, title, uploader, status, created_at)
+            VALUES (?, ?, ?, ?, 'video.mp4', 'Title', 'uploader', 'scheduled', '2026-11-16T18:00:00');
+        """, (tomorrow_str, h, st, pid))
+    conn.commit()
+    conn.close()
+
+    monkeypatch.setattr(routes_sched, "has_manage_scope", lambda: True)
+    mock_retime = MagicMock(return_value=True)
+    monkeypatch.setattr(routes_sched, "update_video_publish_time", mock_retime)
+
+    # Move ONLY the 12:00 slot to 22:00. The remaining 5 slots (14:00, 17:00, 19:00, 20:00, 21:00) are identical.
+    new_slots = ["14:00", "17:00", "19:00", "20:00", "21:00", "22:00"]
+    resp = client.put(
+        "/api/schedule",
+        json={"videos_per_day": 6, "slots": new_slots},
+        headers={"Content-Type": "application/json", "X-Dashboard-Request": "1"},
+    )
+    assert resp.status_code == 200
+    res = resp.json()
+    assert res["status"] == "success"
+    # MUST retimed exactly 1 clip!
+    assert res["retimed_count"] == 1
+
+    # Exactly 1 YouTube call for the moved clip (yt_clip_12)
+    assert mock_retime.call_count == 1
+    assert mock_retime.call_args[0][0] == "yt_clip_12"
+
+    # Verify SQLite state
+    conn = sqlite3.connect(str(test_db_setup))
+    sched_rows = dict(conn.execute(
+        "SELECT post_id, slot_hour FROM schedule WHERE target_date = ?",
+        (tomorrow_str,)
+    ).fetchall())
+    uploads_rows = dict(conn.execute(
+        "SELECT post_id, slot_time FROM uploads WHERE target_date = ?",
+        (tomorrow_str,)
+    ).fetchall())
+    conn.close()
+
+    # clip_12 was retimed to 22:00
+    assert sched_rows["clip_12"] == 22
+    assert uploads_rows["clip_12"] == f"{tomorrow_str}T22:00:00-05:00"
+
+    # All other 5 clips kept their original slots
+    for h in [14, 17, 19, 20, 21]:
+        assert sched_rows[f"clip_{h}"] == h
+        assert uploads_rows[f"clip_{h}"] == f"{tomorrow_str}T{h:02d}:00:00-05:00"

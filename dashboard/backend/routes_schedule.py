@@ -129,8 +129,10 @@ def get_schedule():
                 # Parse slot time string to HH:MM ET
                 slot_iso = d.get("slot_time") or ""
                 time_disp = "12 PM ET"
+                slot_hhmm = "12:00"
                 try:
                     dt = datetime.fromisoformat(slot_iso).astimezone(ZoneInfo("America/New_York"))
+                    slot_hhmm = f"{dt.hour:02d}:{dt.minute:02d}"
                     if dt.minute == 0:
                         time_disp = f"{dt.strftime('%I').lstrip('0')} {dt.strftime('%p')} ET"
                     else:
@@ -140,6 +142,8 @@ def get_schedule():
                     period = "PM" if h >= 12 else "AM"
                     h12 = h % 12 or 12
                     time_disp = f"{h12} {period} ET"
+                    slot_hhmm = f"{h:02d}:00"
+                d["slot_hhmm"] = slot_hhmm
                 d["time_display"] = time_disp
                 d["thumb_url"] = f"/api/thumbs/{d['post_id']}.jpg"
                 tomorrow_slots.append(d)
@@ -268,11 +272,9 @@ async def update_schedule(request: Request, body: ScheduleUpdateRequest):
         except Exception:
             scheduled_clips = []
 
-    # Pair each clip to its own slot (by post_id and uploaded slot), only changing clips that actually moved
-    clips_to_retime = []
+    # 1. Parse each scheduled clip's current uploaded slot time in ET
+    parsed_clips = []
     for clip in scheduled_clips:
-        vid_id = clip["video_id"]
-        post_id = clip["post_id"]
         raw_time = clip.get("slot_time") or ""
         dt_et = None
         try:
@@ -283,28 +285,30 @@ async def update_schedule(request: Request, body: ScheduleUpdateRequest):
         except Exception:
             pass
 
-        if not dt_et:
-            continue
+        if dt_et:
+            clip["dt_et"] = dt_et
+            clip["uploaded_hhmm"] = f"{dt_et.hour:02d}:{dt_et.minute:02d}"
+            parsed_clips.append(clip)
 
-        uploaded_hhmm = f"{dt_et.hour:02d}:{dt_et.minute:02d}"
+    # Sort parsed clips chronologically by their uploaded slot time
+    parsed_clips.sort(key=lambda c: parse_hhmm_to_minutes(c["uploaded_hhmm"]))
 
-        # Match slot by index in current_slots or index in scheduled_clips
-        if uploaded_hhmm in current_slots:
-            slot_idx = current_slots.index(uploaded_hhmm)
+    # 2. Leave every clip whose slot time is unchanged
+    available_new_slots = list(sorted_slots)
+    unchanged_clips = []
+    leftover_clips = []
+
+    for clip in parsed_clips:
+        slot_hhmm = clip["uploaded_hhmm"]
+        if slot_hhmm in available_new_slots:
+            available_new_slots.remove(slot_hhmm)
+            unchanged_clips.append(clip)
         else:
-            try:
-                slot_idx = scheduled_clips.index(clip)
-            except ValueError:
-                continue
+            leftover_clips.append(clip)
 
-        if slot_idx >= len(sorted_slots):
-            continue
-
-        target_hhmm = sorted_slots[slot_idx]
-        if target_hhmm == uploaded_hhmm:
-            # Clip did not move: leave unchanged
-            continue
-
+    # 3. Match only the leftover old times to the leftover new times in order
+    clips_to_retime = []
+    for clip, target_hhmm in zip(leftover_clips, available_new_slots):
         th, tm = int(target_hhmm.split(":")[0]), int(target_hhmm.split(":")[1])
         new_dt = tomorrow_dt.replace(hour=th, minute=tm, second=0, microsecond=0)
         if new_dt <= now_ny:
@@ -315,10 +319,10 @@ async def update_schedule(request: Request, body: ScheduleUpdateRequest):
         new_slot_time_iso = new_dt.isoformat()
 
         clips_to_retime.append({
-            "post_id": post_id,
-            "video_id": vid_id,
-            "old_slot_hour": dt_et.hour,
-            "old_slot_time": raw_time,
+            "post_id": clip["post_id"],
+            "video_id": clip["video_id"],
+            "old_slot_hour": clip["dt_et"].hour,
+            "old_slot_time": clip.get("slot_time"),
             "old_publish_at": clip.get("publish_at"),
             "slot_hour": th,
             "slot_time": new_slot_time_iso,
