@@ -360,7 +360,7 @@ class AgentDatabase:
         except sqlite3.OperationalError:
             pass
 
-        # Seed the two confirmed claims
+        # Seed the two confirmed claims: car clip kept (still public), goat clip pulled (deleted)
         cur = conn.execute("SELECT COUNT(*) FROM claims WHERE post_id = 'reddit_1xv7kmf'")
         if cur.fetchone()[0] == 0:
             conn.execute("""
@@ -375,12 +375,14 @@ class AgentDatabase:
                 "CollabDRM",
                 "Collab ViralHog - Female Pheasant Not Impressed By Mating Dance",
                 "0:02 - 0:19",
-                "held",
+                "kept",
                 "2026-11-16T18:00:00-05:00",
                 "r/funny",
                 "KnownUploader",
                 "Recorded, near-duplicates blocked, marked possible false match"
             ))
+        else:
+            conn.execute("UPDATE claims SET action = 'kept' WHERE post_id = 'reddit_1xv7kmf'")
 
         cur = conn.execute("SELECT COUNT(*) FROM claims WHERE post_id = 'reddit_1xrfauk'")
         if cur.fetchone()[0] == 0:
@@ -396,16 +398,20 @@ class AgentDatabase:
                 "SME",
                 "Eye of the Tiger by Survivor (SME for Volcano)",
                 "0:00 - 0:15",
-                "held",
+                "pulled",
                 "2026-11-16T18:00:00-05:00",
                 "r/funny",
                 "KnownUploader",
                 "Commercial music track identified by audio fingerprint"
             ))
+        else:
+            conn.execute("UPDATE claims SET action = 'pulled' WHERE post_id = 'reddit_1xrfauk'")
 
         try:
-            conn.execute("UPDATE uploads SET claim_status = 'claimed', rights_status = 'claimed' WHERE post_id IN ('reddit_1xv7kmf', 'reddit_1xrfauk')")
-            conn.execute("UPDATE schedule SET rights_status = 'claimed' WHERE post_id IN ('reddit_1xv7kmf', 'reddit_1xrfauk')")
+            conn.execute("UPDATE uploads SET claim_status = 'claimed', rights_status = 'claimed', privacy = 'public' WHERE post_id = 'reddit_1xv7kmf'")
+            conn.execute("UPDATE uploads SET claim_status = 'claimed', rights_status = 'claimed', status = 'deleted' WHERE post_id = 'reddit_1xrfauk'")
+            conn.execute("UPDATE schedule SET rights_status = 'claimed' WHERE post_id = 'reddit_1xv7kmf'")
+            conn.execute("UPDATE schedule SET status = 'deleted' WHERE post_id = 'reddit_1xrfauk'")
         except sqlite3.OperationalError:
             pass
 

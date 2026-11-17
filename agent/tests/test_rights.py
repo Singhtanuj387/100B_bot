@@ -428,12 +428,15 @@ def test_pull_and_replace_transactional_safety(test_db):
 # ==============================================================================
 
 def test_seeded_claims_exist(test_db):
-    """Verify that seeded claims reddit_1xv7kmf and reddit_1xrfauk are properly initialized."""
+    """Verify that seeded claims reddit_1xv7kmf (kept, still public) and reddit_1xrfauk (pulled, deleted) are properly initialized."""
     claims = test_db.get_claims()
-    post_ids = [c["post_id"] for c in claims]
+    claims_map = {c["post_id"]: c for c in claims}
 
-    assert "reddit_1xv7kmf" in post_ids  # CollabDRM visual claim
-    assert "reddit_1xrfauk" in post_ids  # SME audio claim ("Eye of the Tiger")
+    assert "reddit_1xv7kmf" in claims_map  # CollabDRM visual claim
+    assert claims_map["reddit_1xv7kmf"]["action"] == "kept"
+
+    assert "reddit_1xrfauk" in claims_map  # SME audio claim ("Eye of the Tiger")
+    assert claims_map["reddit_1xrfauk"]["action"] == "pulled"
 
 
 def test_unknown_subreddit_skips_penalty(test_db):
