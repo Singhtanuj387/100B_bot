@@ -160,6 +160,11 @@ export const AgentView: React.FC<AgentViewProps> = ({ onSelectClipForYouTube }) 
     watermark: "Another channel's watermark",
     duration: 'Too long or too short',
     tv_film: 'Looks like TV or film',
+    rights_agency: 'Agency / syndicator match',
+    rights_music: 'Commercial music match',
+    rights_visual_match: 'Visual match on web',
+    rights_history: 'Claim history / duplicate',
+    rights_social_watermark: 'Social watermark (TikTok/IG/FB)',
     other: 'Other criteria',
   };
 
@@ -169,7 +174,9 @@ export const AgentView: React.FC<AgentViewProps> = ({ onSelectClipForYouTube }) 
     watermark: 8,
     duration: 7,
     tv_film: 5,
-  }).sort((a, b) => b[1] - a[1]);
+  })
+    .filter(([, c]) => c > 0)
+    .sort((a, b) => b[1] - a[1]);
 
   const maxReasonCount = Math.max(1, ...reasonsList.map(([, c]) => c));
 

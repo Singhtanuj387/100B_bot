@@ -265,6 +265,8 @@ def schedule_node(
                 "score": chosen_vid.get("score", 0.0),
                 "is_peak": is_peak,
                 "status": "queued",
+                "rights_status": chosen_vid.get("rights_status", "cleared"),
+                "rights_risk": chosen_vid.get("rights_risk", 0),
             }
             schedule_slots.append(slot_entry)
         else:
@@ -287,6 +289,21 @@ def schedule_node(
     if not dry_run:
         # Save to SQLite table
         db.save_schedule_slots(target_date, schedule_slots)
+
+        # Store a rights_checks row for every scheduled clip if not already present
+        if hasattr(db, "record_rights_check"):
+            for s in schedule_slots:
+                pid = s["post_id"]
+                existing_check = db.get_rights_check(pid) if hasattr(db, "get_rights_check") else None
+                if not existing_check:
+                    db.record_rights_check(
+                        post_id=pid,
+                        target_date=target_date,
+                        layers={"status": "scheduled_cleared"},
+                        risk_score=s.get("rights_risk", 0),
+                        decision="pass" if s.get("rights_status") == "cleared" else "review",
+                        reasons=[],
+                    )
 
         # Save to schedule.json for Phase 4
         with open(schedule_json_path, "w", encoding="utf-8") as f:

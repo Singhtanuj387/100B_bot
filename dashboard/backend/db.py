@@ -458,7 +458,10 @@ def _get_day_stats_internal(conn: sqlite3.Connection, target_date: str) -> Dict[
             "approved": selected_count,
             "selected": selected_count,
             "reserve_added": 0,
-            "reject_reasons_json": {"not_funny": 0, "non_english": 0, "watermark": 0, "duration": 0, "tv_film": 0, "other": 0},
+            "reject_reasons_json": {
+                "not_funny": 0, "non_english": 0, "watermark": 0, "duration": 0, "tv_film": 0,
+                "rights_agency": 0, "rights_music": 0, "rights_visual_match": 0, "rights_history": 0, "rights_social_watermark": 0, "other": 0
+            },
             "source_stats_json": {},
             "estimated": True,
         }
@@ -468,11 +471,24 @@ def _get_day_stats_internal(conn: sqlite3.Connection, target_date: str) -> Dict[
     borderline_count = sum(1 for r in rows if r["status"] == "borderline")
     found_count = len(rows)
 
-    reasons = {"not_funny": 0, "non_english": 0, "watermark": 0, "duration": 0, "tv_film": 0, "other": 0}
+    reasons = {
+        "not_funny": 0, "non_english": 0, "watermark": 0, "duration": 0, "tv_film": 0,
+        "rights_agency": 0, "rights_music": 0, "rights_visual_match": 0, "rights_history": 0, "rights_social_watermark": 0, "other": 0
+    }
     for r in rows:
         if r["status"] in ("rejected", "auto_rejected"):
             txt = (r["decision_reason"] or "").lower()
-            if any(w in txt for w in ("not funny", "score", "threshold", "unfunny")):
+            if "rights_agency" in txt or "agency" in txt or "viralhog" in txt or "collab" in txt:
+                reasons["rights_agency"] += 1
+            elif "rights_music" in txt or "music" in txt:
+                reasons["rights_music"] += 1
+            elif "rights_visual" in txt or "visual_match" in txt:
+                reasons["rights_visual_match"] += 1
+            elif "rights_history" in txt or "duplicate" in txt:
+                reasons["rights_history"] += 1
+            elif "rights_social" in txt or "social_watermark" in txt:
+                reasons["rights_social_watermark"] += 1
+            elif any(w in txt for w in ("not funny", "score", "threshold", "unfunny")):
                 reasons["not_funny"] += 1
             elif any(w in txt for w in ("english", "language", "speech")):
                 reasons["non_english"] += 1
@@ -529,6 +545,7 @@ def get_agent_day_detail(target_date: str) -> Dict[str, Any]:
                     FROM agent_decisions
                 )
                 SELECT s.slot_time, s.slot_hour, s.post_id, s.title, s.uploader, s.source_url, s.video_path,
+                       s.rights_status, s.rights_risk,
                        COALESCE(d.hybrid_score, r.score) as hybrid_score
                 FROM schedule s
                 LEFT JOIN latest_dec d ON s.post_id = d.post_id AND d.rn = 1
@@ -551,6 +568,7 @@ def get_agent_day_detail(target_date: str) -> Dict[str, Any]:
                         FROM agent_decisions
                     )
                     SELECT s.slot_time, s.slot_hour, s.post_id, s.title, s.uploader, s.source_url, s.video_path,
+                           s.rights_status, s.rights_risk,
                            COALESCE(d.hybrid_score, r.score) as hybrid_score
                     FROM schedule s
                     LEFT JOIN latest_dec d ON s.post_id = d.post_id AND d.rn = 1

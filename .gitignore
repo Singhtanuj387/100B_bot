@@ -122,6 +122,7 @@ Thumbs.db
 desktop.ini
 
 # --- Backup & Temp files ---
+.pytest_tmp/
 *.bak
 *.bak_*
 *.swp

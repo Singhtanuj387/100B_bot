@@ -1,8 +1,8 @@
 import React from 'react';
-import { Bot, Calendar, PlaySquare } from 'lucide-react';
+import { Bot, Calendar, PlaySquare, ShieldAlert } from 'lucide-react';
 import { formatTimeET, formatWeekdayET } from '../utils/timeFormat';
 
-export type NavTab = 'agent' | 'schedule' | 'youtube';
+export type NavTab = 'agent' | 'schedule' | 'youtube' | 'claims';
 
 interface PipelineStatusData {
   last_run?: {
@@ -61,6 +61,7 @@ export const Rail: React.FC<RailProps> = ({
     { id: 'agent' as NavTab, label: 'Agent', icon: Bot },
     { id: 'schedule' as NavTab, label: 'Schedule', icon: Calendar },
     { id: 'youtube' as NavTab, label: 'YouTube', icon: PlaySquare },
+    { id: 'claims' as NavTab, label: 'Claims', icon: ShieldAlert },
   ];
 
   return (

@@ -141,3 +141,39 @@ allowed_sources:
     - "WholesomeMeme"
     - "LaughsDaily"
 
+# ==============================================================================
+#             RIGHTS & CONTENT ID PROTECTION (PHASE 6)
+# ==============================================================================
+rights:
+  enabled: true
+  local_only: true                     # Run in zero-cost Local-Only mode until billing enabled on Cloud Vision
+  unreviewed_policy: "hold"            # "hold" sets private with no publishAt; "publish" leaves scheduled
+  on_provider_error: "review"          # Never silently pass on error; always mark for review
+  prefer_max_seconds: 60.0             # Soft risk penalty for clips > 60s
+
+  # Provider limits & daily caps
+  providers:
+    audd:
+      enabled: true
+      daily_cap: 40                    # Max 40 calls / day
+      multi_sample_threshold: 0.60     # Send 2nd sample only if unrecognized and music_fraction >= 0.60
+    google_vision:
+      enabled: false                   # Disabled in local-only mode; enable when Cloud project billing is ready
+      daily_cap: 25                    # Hard daily cap
+      budget_alert_threshold: 800      # Monthly units alert before reaching 1000 free tier limit
+
+  # Weights and risk scoring thresholds (capped at 100)
+  weights:
+    hard_block_score: 100
+    unrecognized_music: 35
+    high_web_matches: 30
+    duration_over_60s: 15
+    high_claim_subreddit: 20
+    social_watermark_review: 40
+
+  # Decision bands
+  thresholds:
+    block: 80                          # Score >= 80 -> hard block
+    review: 30                         # Score in [30, 79] -> review required
+
+

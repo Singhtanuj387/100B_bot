@@ -1,0 +1,132 @@
+# Agency and Social Platform Blocklist for Rights & Content ID Protection
+# Used by Layer 1 (Agency and source blocklist) in rights_check
+
+agencies:
+  - name: "ViralHog"
+    aliases:
+      - "ViralHog"
+      - "Viral Hog"
+      - "viralhog"
+      - "viralhog.com"
+    domains:
+      - "viralhog.com"
+      - "youtu.be/viralhog"
+
+  - name: "Jukin Media"
+    aliases:
+      - "Jukin Media"
+      - "JukinMedia"
+      - "Jukin"
+      - "jukinmedia.com"
+      - "FailArmy"
+      - "People Are Awesome"
+      - "The Pet Collective"
+    domains:
+      - "jukinmedia.com"
+      - "failarmy.com"
+
+  - name: "CollabDRM"
+    aliases:
+      - "CollabDRM"
+      - "Collab DRM"
+      - "Collab ViralHog"
+      - "Collab Media"
+      - "Collab"
+    domains:
+      - "collabdrm.com"
+
+  - name: "Storyful"
+    aliases:
+      - "Storyful"
+      - "Storyful News"
+      - "storyful.com"
+    domains:
+      - "storyful.com"
+
+  - name: "Newsflare"
+    aliases:
+      - "Newsflare"
+      - "News flare"
+      - "newsflare.com"
+    domains:
+      - "newsflare.com"
+
+  - name: "Caters"
+    aliases:
+      - "Caters"
+      - "Caters News"
+      - "Caters Clips"
+      - "catersnews.com"
+    domains:
+      - "catersnews.com"
+
+  - name: "Barcroft"
+    aliases:
+      - "Barcroft"
+      - "Barcroft Media"
+      - "Barcroft Studios"
+      - "Truly"
+    domains:
+      - "barcroft.tv"
+      - "truly.com"
+
+  - name: "Rumble Viral"
+    aliases:
+      - "Rumble Viral"
+      - "RumbleViral"
+      - "rumble.com"
+    domains:
+      - "rumble.com"
+
+  - name: "T&T Creative Media"
+    aliases:
+      - "T&T Creative Media"
+      - "TT Creative Media"
+      - "tt-creative.com"
+    domains:
+      - "tt-creative.com"
+
+  - name: "LADBible Group"
+    aliases:
+      - "LADBible"
+      - "UNILAD"
+      - "LAD Bible"
+      - "UNI LAD"
+    domains:
+      - "ladbible.com"
+      - "unilad.com"
+
+social_platforms:
+  - name: "TikTok"
+    aliases:
+      - "TikTok"
+      - "Tik Tok"
+      - "tiktok.com"
+      - "douyin"
+    domains:
+      - "tiktok.com"
+      - "douyin.com"
+
+  - name: "Instagram"
+    aliases:
+      - "Instagram"
+      - "Insta Reels"
+      - "Reels"
+      - "instagram.com"
+    domains:
+      - "instagram.com"
+
+  - name: "Facebook"
+    aliases:
+      - "Facebook"
+      - "FB Reels"
+      - "facebook.com"
+    domains:
+      - "facebook.com"
+
+  - name: "CapCut"
+    aliases:
+      - "CapCut"
+      - "Cap Cut"
+    domains:
+      - "capcut.com"

@@ -70,6 +70,8 @@ def test_db_setup(tmp_path, monkeypatch):
             source_url TEXT,
             uploader TEXT,
             status TEXT DEFAULT 'queued',
+            rights_status TEXT DEFAULT 'unreviewed',
+            rights_risk INTEGER DEFAULT 0,
             created_at TEXT NOT NULL,
             UNIQUE(target_date, slot_time)
         );
@@ -86,7 +88,10 @@ def test_db_setup(tmp_path, monkeypatch):
             uploaded_at TEXT,
             privacy TEXT,
             publish_at TEXT,
-            pacific_date TEXT
+            pacific_date TEXT,
+            claim_status TEXT DEFAULT 'none',
+            rights_status TEXT DEFAULT 'unreviewed',
+            rights_risk INTEGER DEFAULT 0
         );
     """)
     conn.execute("""
@@ -116,6 +121,57 @@ def test_db_setup(tmp_path, monkeypatch):
             decision_reason TEXT,
             target_date TEXT NOT NULL,
             created_at TEXT NOT NULL
+        );
+    """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS rights_checks (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            post_id TEXT NOT NULL,
+            target_date TEXT NOT NULL,
+            checked_at TEXT NOT NULL,
+            layers_json TEXT NOT NULL,
+            risk_score INTEGER NOT NULL,
+            decision TEXT NOT NULL,
+            reasons_json TEXT NOT NULL,
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP
+        );
+    """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS claims (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            video_id TEXT,
+            post_id TEXT NOT NULL,
+            claim_type TEXT NOT NULL,
+            claimant TEXT NOT NULL,
+            asset_title TEXT,
+            found_in TEXT,
+            action TEXT NOT NULL,
+            noted_at TEXT NOT NULL,
+            source_name TEXT,
+            uploader TEXT,
+            phashes_json TEXT,
+            notes TEXT,
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP
+        );
+    """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS rights_blocklist (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            type TEXT NOT NULL,
+            value TEXT NOT NULL,
+            source_claim_id INTEGER REFERENCES claims(id),
+            status TEXT NOT NULL DEFAULT 'active',
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP
+        );
+    """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS provider_usage (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            day TEXT NOT NULL,
+            provider TEXT NOT NULL,
+            calls INTEGER DEFAULT 0,
+            errors INTEGER DEFAULT 0,
+            UNIQUE(day, provider)
         );
     """)
 
@@ -945,3 +1001,96 @@ def test_compare_whole_file_after_saving_schedule(client, test_db_setup, tmp_pat
     and character by character after saving schedule.
     """
     test_put_schedule_preserves_all_comments_and_blank_lines(client, test_db_setup, tmp_path, monkeypatch)
+
+
+# ==============================================================================
+# Phase 6 Rights Check & Claims API Tests
+# ==============================================================================
+
+def test_rights_status_api(client, test_db_setup):
+    resp = client.get("/api/rights/status")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert "is_local_only" in data
+    assert "unreviewed_policy" in data
+    assert "active_layers" in data
+    assert "providers" in data
+    assert "stats" in data
+
+
+def test_rights_review_queue_api(client, test_db_setup):
+    resp = client.get("/api/rights/review")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert "target_date" in data
+    assert "clips" in data
+    assert isinstance(data["clips"], list)
+
+
+def test_rights_mark_clear_and_held_api(client, test_db_setup):
+    # Test hold
+    resp_hold = client.post("/api/rights/hold", json={"post_id": "clip1"})
+    assert resp_hold.status_code == 200
+    data_hold = resp_hold.json()
+    assert data_hold["success"] is True
+
+    # Test mark-clear
+    resp_clear = client.post("/api/rights/mark-clear", json={"post_id": "clip1"})
+    assert resp_clear.status_code == 200
+    data_clear = resp_clear.json()
+    assert data_clear["success"] is True
+
+
+def test_rights_mark_claimed_and_blocklist_flow(client, test_db_setup):
+    # 1. Register a claim with suggested blocklist items
+    claim_payload = {
+        "post_id": "clip1",
+        "video_id": "yt_vid_1",
+        "claimant": "CollabDRM",
+        "claim_type": "visual",
+        "asset_title": "Collab ViralHog - Test Video",
+        "action": "held",
+        "uploader": "risky_uploader",
+        "source_name": "r/Unexpected",
+        "notes": "Test claim entry",
+    }
+    resp = client.post("/api/rights/mark-claimed", json=claim_payload)
+    assert resp.status_code == 200
+    res_data = resp.json()
+    assert res_data["success"] is True
+    assert "claim_id" in res_data
+    assert len(res_data["suggestions"]) > 0
+
+    # 2. Query blocklist and verify pending suggestions
+    resp_bl = client.get("/api/rights/blocklist")
+    assert resp_bl.status_code == 200
+    bl_data = resp_bl.json()
+    assert "active" in bl_data
+    assert "pending" in bl_data
+    assert len(bl_data["pending"]) > 0
+
+    pending_id = bl_data["pending"][0]["id"]
+
+    # 3. Approve suggestion into active blocklist
+    resp_action = client.post(f"/api/rights/blocklist/{pending_id}/approve")
+    assert resp_action.status_code == 200
+    assert resp_action.json()["success"] is True
+
+    # 4. Verify it moved to active list
+    resp_bl_after = client.get("/api/rights/blocklist")
+    active_ids = [e["id"] for e in resp_bl_after.json()["active"]]
+    assert pending_id in active_ids
+
+
+def test_rights_claims_history_and_recent_published(client, test_db_setup):
+    # 1. Claims history
+    resp_hist = client.get("/api/rights/claims")
+    assert resp_hist.status_code == 200
+    hist_data = resp_hist.json()
+    assert isinstance(hist_data, list)
+
+    # 2. Recent published
+    resp_recent = client.get("/api/rights/published")
+    assert resp_recent.status_code == 200
+    recent_data = resp_recent.json()
+    assert isinstance(recent_data, list)

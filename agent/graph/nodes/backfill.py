@@ -3,6 +3,7 @@ from typing import Dict, Any, List
 from loguru import logger
 from graph.state import CurationState
 from core.db import AgentDatabase
+from core.rights import RightsCheckEngine
 from graph.nodes.caption import is_generic_title
 
 
@@ -76,6 +77,39 @@ def backfill_node(state: CurationState, db: AgentDatabase) -> Dict[str, Any]:
                 )
                 missing_ids.append(r["post_id"])
                 continue
+
+            # Verify reserve clip rights status (re-run if missing or stale > 7 days)
+            rights_status = r.get("rights_status")
+            rights_checked_at = r.get("rights_checked_at")
+            is_stale = True
+            if rights_checked_at:
+                try:
+                    from datetime import datetime, timedelta
+                    dt_check = datetime.fromisoformat(rights_checked_at)
+                    if datetime.now() - dt_check < timedelta(days=7):
+                        is_stale = False
+                except Exception:
+                    is_stale = True
+
+            if not rights_status or is_stale:
+                rights_engine = RightsCheckEngine(config=state.get("config", {}), db=db)
+                eval_res = rights_engine.evaluate_clip(
+                    post_id=r["post_id"],
+                    video_path=v_path,
+                    title=r.get("title", ""),
+                    uploader=r.get("uploader", ""),
+                    source_url=r.get("post_url", ""),
+                    duration=r.get("duration"),
+                )
+                if eval_res["decision"] == "block":
+                    logger.warning(
+                        f"[Node: BACKFILL] Reserve clip '{r.get('post_id')}' failed rights check: "
+                        f"{eval_res.get('reasons')}. Skipping candidate."
+                    )
+                    continue
+                r["rights_status"] = "needs_check" if eval_res["decision"] == "review" else "cleared"
+                r["rights_risk"] = eval_res["risk_score"]
+                r["rights_checked_at"] = eval_res["checked_at"]
 
             valid_reserves.append(r)
             if len(valid_reserves) == shortage:

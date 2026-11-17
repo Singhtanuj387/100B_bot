@@ -16,6 +16,7 @@ from graph.nodes import (
     cheap_filters_node,
     judge_node,
     decide_node,
+    rights_check_node,
     human_review_node,
     backfill_node,
     update_registry_node,
@@ -69,6 +70,9 @@ def build_curation_graph(
     def _decide(state: CurationState) -> Dict[str, Any]:
         return decide_node(state, config, db)
 
+    def _rights_check(state: CurationState) -> Dict[str, Any]:
+        return rights_check_node(state, config, db)
+
     def _human_review(state: CurationState) -> Dict[str, Any]:
         return human_review_node(state, db, config=config)
 
@@ -96,6 +100,7 @@ def build_curation_graph(
     workflow.add_node("cheap_filters", _cheap_filters)
     workflow.add_node("judge", _judge)
     workflow.add_node("decide", _decide)
+    workflow.add_node("rights_check", _rights_check)
     workflow.add_node("human_review", _human_review)
     workflow.add_node("backfill", _backfill)
     workflow.add_node("update_registry", _update_registry)
@@ -103,7 +108,7 @@ def build_curation_graph(
     workflow.add_node("edit", _edit)
     workflow.add_node("schedule", _schedule)
 
-    # 2. Linear Pipeline Edges (Start -> Discover -> Plan -> Two-Step Scraper -> Judge)
+    # 2. Linear Pipeline Edges (Start -> Discover -> Plan -> Two-Step Scraper -> Judge -> Decide -> Rights Check)
     workflow.add_edge(START, "discover")
     workflow.add_edge("discover", "plan")
     workflow.add_edge("plan", "scrape_list")
@@ -112,9 +117,10 @@ def build_curation_graph(
     workflow.add_edge("download", "cheap_filters")
     workflow.add_edge("cheap_filters", "judge")
     workflow.add_edge("judge", "decide")
+    workflow.add_edge("decide", "rights_check")
 
-    # 3. Conditional Routing after 'decide' (Count Check)
-    def route_after_decide(state: CurationState) -> Literal["plan", "human_review", "backfill"]:
+    # 3. Conditional Routing after 'rights_check' (Count Check)
+    def route_after_rights_check(state: CurationState) -> Literal["plan", "human_review", "backfill"]:
         loop_count = state.get("loop_count", 1)
         max_loops = state.get("max_loops", config.get("max_loops", 3))
         target_count = state.get("target_count", 6)
@@ -123,11 +129,11 @@ def build_curation_graph(
         goal = target_count + buffer
 
         total_acquired = len(state.get("approved", [])) + len(state.get("borderline", []))
-        logger.info(f"Count check: {total_acquired}/{goal} clips (Loop {loop_count}/{max_loops})")
+        logger.info(f"Count check after rights: {total_acquired}/{goal} clips (Loop {loop_count}/{max_loops})")
 
         # Loop back to PLAN if still under goal and under max_loops (never discover!)
         if total_acquired < goal and loop_count < max_loops and not state.get("backfill_performed", False):
-            logger.info(f"Target shortage ({total_acquired} < {goal}). Looping back to PLAN node.")
+            logger.info(f"Target shortage after rights check ({total_acquired} < {goal}). Looping back to PLAN node.")
             return "plan"
 
         if len(state.get("borderline", [])) > 0:
@@ -136,8 +142,8 @@ def build_curation_graph(
         return "backfill"
 
     workflow.add_conditional_edges(
-        "decide",
-        route_after_decide,
+        "rights_check",
+        route_after_rights_check,
         {
             "plan": "plan",
             "human_review": "human_review",

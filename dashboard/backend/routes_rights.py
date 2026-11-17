@@ -1,0 +1,478 @@
+import os
+import json
+import sqlite3
+import yaml
+from pathlib import Path
+from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
+from typing import Dict, Any, Optional, List
+from fastapi import APIRouter, HTTPException, Header, Body
+from pydantic import BaseModel
+
+import sys
+from dashboard.backend import db as backend_db
+from dashboard.backend.db import WORKSPACE_DIR
+
+def get_ro_connection():
+    return backend_db.get_ro_connection()
+
+def get_rw_connection():
+    return backend_db.get_rw_connection()
+
+_agent_dir = str(WORKSPACE_DIR / "agent")
+if _agent_dir not in sys.path:
+    sys.path.insert(0, _agent_dir)
+
+try:
+    from core.rights.youtube_gate import YouTubeRightsGate
+    from core.rights.perceptual import HistoryClaimsChecker
+except ImportError:
+    from agent.core.rights.youtube_gate import YouTubeRightsGate
+    from agent.core.rights.perceptual import HistoryClaimsChecker
+
+router = APIRouter(prefix="/api/rights", tags=["rights"])
+CONFIG_PATH = WORKSPACE_DIR / "agent" / "config.yaml"
+
+
+def load_rights_config() -> Dict[str, Any]:
+    if CONFIG_PATH.is_file():
+        try:
+            with open(CONFIG_PATH, "r", encoding="utf-8") as f:
+                data = yaml.safe_load(f) or {}
+                return data.get("rights", {})
+        except Exception:
+            pass
+    return {}
+
+
+class MarkClearRequest(BaseModel):
+    post_id: str
+
+
+class MarkClaimedRequest(BaseModel):
+    post_id: str
+    video_id: Optional[str] = None
+    claim_type: str = "audio"  # audio, visual, both
+    claimant: str
+    asset_title: Optional[str] = None
+    found_in: Optional[str] = None
+    action: str = "held"  # kept, held, pulled, disputed
+    notes: Optional[str] = None
+
+
+class HoldRequest(BaseModel):
+    post_id: str
+    video_id: Optional[str] = None
+
+
+class ReplaceFromReserveRequest(BaseModel):
+    post_id: str
+    action_on_claimed: str = "held"  # held, delete
+    delete_confirmation: Optional[str] = None
+
+
+class PublishedActionRequest(BaseModel):
+    post_id: str
+    video_id: Optional[str] = None
+    action: str  # keep, make_private, delete
+    delete_confirmation: Optional[str] = None
+
+
+class AddBlocklistRequest(BaseModel):
+    type: str  # text, domain, uploader, subreddit, claimant, track
+    value: str
+
+
+@router.get("/status")
+def get_rights_status():
+    """
+    Returns active layers status, provider quotas used today against caps,
+    local-only warning, and aggregate claim metrics.
+    """
+    cfg = load_rights_config()
+    is_local_only = cfg.get("local_only", True)
+    audd_cap = cfg.get("providers", {}).get("audd", {}).get("daily_cap", 40)
+    vision_cap = cfg.get("providers", {}).get("google_vision", {}).get("daily_cap", 25)
+
+    today_str = datetime.now(ZoneInfo("America/New_York")).strftime("%Y-%m-%d")
+
+    with get_ro_connection() as conn:
+        # Provider usage
+        cur = conn.execute("SELECT provider, calls, errors FROM provider_usage WHERE day = ?", (today_str,))
+        usage_rows = {r["provider"]: dict(r) for r in cur.fetchall()}
+
+        # Total claims
+        total_claims = conn.execute("SELECT COUNT(*) FROM claims").fetchone()[0]
+        total_published = conn.execute("SELECT COUNT(*) FROM uploads WHERE status = 'uploaded'").fetchone()[0]
+        claim_rate = round((total_claims / total_published) * 100, 2) if total_published > 0 else 0.0
+
+        # Subreddit claim breakdown
+        cur_sub = conn.execute("""
+            SELECT source_name, COUNT(*) as cnt
+            FROM claims
+            WHERE source_name IS NOT NULL
+            GROUP BY source_name
+        """)
+        sub_rates = {r["source_name"]: r["cnt"] for r in cur_sub.fetchall()}
+
+    has_audd_key = bool(os.environ.get("AUDD_API_TOKEN"))
+    has_vision_key = bool(os.environ.get("GOOGLE_VISION_API_KEY"))
+
+    active_layers = {
+        "layer1_agency_ocr": True,
+        "layer2a_local_music": True,
+        "layer2b_fingerprint": has_audd_key and not is_local_only,
+        "layer3_cloud_vision": has_vision_key and not is_local_only,
+        "layer4_scheduled_gate": True,
+        "layer5_history_learned": True,
+    }
+
+    return {
+        "is_local_only": is_local_only,
+        "unreviewed_policy": cfg.get("unreviewed_policy", "hold"),
+        "active_layers": active_layers,
+        "providers": {
+            "audd": {
+                "configured": has_audd_key,
+                "calls_today": usage_rows.get("audd", {}).get("calls", 0),
+                "daily_cap": audd_cap,
+            },
+            "google_vision": {
+                "configured": has_vision_key,
+                "calls_today": usage_rows.get("google_vision", {}).get("calls", 0),
+                "daily_cap": vision_cap,
+                "monthly_free_tier": 1000,
+            },
+        },
+        "stats": {
+            "total_claims": total_claims,
+            "total_published": total_published,
+            "claims_per_100_published": claim_rate,
+            "claims_by_subreddit": sub_rates,
+        },
+    }
+
+
+@router.get("/review")
+def get_needs_review_queue():
+    """
+    Returns tomorrow's scheduled clips with risk badges and per-layer findings.
+    """
+    now_ny = datetime.now(ZoneInfo("America/New_York"))
+    target_date = (now_ny + timedelta(days=1)).strftime("%Y-%m-%d")
+
+    with get_ro_connection() as conn:
+        # Check tomorrow first; if empty check today
+        cur = conn.execute("""
+            SELECT s.slot_time, s.slot_hour, s.post_id, s.title, s.uploader, s.source_url, s.video_path,
+                   s.rights_status, s.rights_risk, u.video_id, u.publish_at
+            FROM schedule s
+            LEFT JOIN uploads u ON s.post_id = u.post_id
+            WHERE s.target_date = ?
+            ORDER BY s.slot_time ASC
+        """, (target_date,))
+        rows = [dict(r) for r in cur.fetchall()]
+
+        if not rows:
+            target_date = now_ny.strftime("%Y-%m-%d")
+            cur = conn.execute("""
+                SELECT s.slot_time, s.slot_hour, s.post_id, s.title, s.uploader, s.source_url, s.video_path,
+                       s.rights_status, s.rights_risk, u.video_id, u.publish_at
+                FROM schedule s
+                LEFT JOIN uploads u ON s.post_id = u.post_id
+                WHERE s.target_date = ?
+                ORDER BY s.slot_time ASC
+            """, (target_date,))
+            rows = [dict(r) for r in cur.fetchall()]
+
+        # Attach rights_checks details
+        for r in rows:
+            pid = r["post_id"]
+            check_row = conn.execute("""
+                SELECT layers_json, risk_score, decision, reasons_json
+                FROM rights_checks
+                WHERE post_id = ?
+                ORDER BY id DESC LIMIT 1
+            """, (pid,)).fetchone()
+
+            if check_row:
+                try:
+                    r["layers"] = json.loads(check_row["layers_json"])
+                except Exception:
+                    r["layers"] = {}
+                try:
+                    r["reasons"] = json.loads(check_row["reasons_json"])
+                except Exception:
+                    r["reasons"] = []
+                r["risk_score"] = check_row["risk_score"]
+                r["decision"] = check_row["decision"]
+            else:
+                r["layers"] = {}
+                r["reasons"] = []
+                r["risk_score"] = r.get("rights_risk") or 0
+                r["decision"] = "pass" if r["risk_score"] < 30 else ("review" if r["risk_score"] < 80 else "block")
+
+            r["thumb_url"] = f"/api/youtube/thumb/{pid}"
+
+    return {"target_date": target_date, "clips": rows}
+
+
+@router.get("/published")
+def get_recently_published(days: int = 7):
+    """
+    Returns clips published within the last 7 days with action capabilities:
+    Keep, Make private, and Delete (typed DELETE).
+    """
+    now_ny = datetime.now(ZoneInfo("America/New_York"))
+    since_date = (now_ny - timedelta(days=days)).strftime("%Y-%m-%d")
+
+    with get_ro_connection() as conn:
+        cur = conn.execute("""
+            SELECT u.post_id, u.video_id, u.target_date, u.slot_time, u.publish_at, u.status,
+                   u.privacy, u.claim_status, u.rights_status, u.rights_risk, s.title, s.uploader
+            FROM uploads u
+            LEFT JOIN schedule s ON u.post_id = s.post_id
+            WHERE u.target_date >= ?
+            ORDER BY u.target_date DESC, u.slot_time DESC
+        """, (since_date,))
+        rows = [dict(r) for r in cur.fetchall()]
+
+        for r in rows:
+            r["thumb_url"] = f"/api/youtube/thumb/{r['post_id']}"
+
+    return rows
+
+
+@router.post("/mark-clear")
+def mark_clip_clear(req: MarkClearRequest):
+    """
+    Marks a scheduled clip cleared. Restores scheduled publishAt or assigns next free slot.
+    """
+    gate = YouTubeRightsGate(db_path=backend_db.DB_PATH)
+    # Try creating YouTube service if tokens exist
+    yt_service = None
+    try:
+        from dashboard.backend.youtube_api import get_youtube_service
+        yt_service = get_youtube_service()
+    except Exception:
+        pass
+
+    res = gate.mark_clear(req.post_id, youtube_service=yt_service)
+    if not res.get("success"):
+        raise HTTPException(status_code=400, detail=res.get("error", "Failed to mark cleared"))
+    return res
+
+
+@router.post("/mark-claimed")
+def mark_clip_claimed(req: MarkClaimedRequest):
+    """
+    Registers a Content ID claim against a video, auto-extracts blocklist suggestions,
+    and updates clip status.
+    """
+    with get_rw_connection() as conn:
+        # Check source name and uploader from schedule
+        row = conn.execute("""
+            SELECT s.source_url, s.uploader
+            FROM schedule s
+            WHERE s.post_id = ?
+        """, (req.post_id,)).fetchone()
+
+        uploader = row["uploader"] if row and row["uploader"] else "Unknown"
+        s_url = row["source_url"] if row and row["source_url"] else ""
+        source_name = "r/funny"
+        if s_url and "reddit.com/r/" in s_url:
+            try:
+                source_name = f"r/{s_url.split('/r/')[1].split('/')[0]}"
+            except Exception:
+                pass
+
+        cur = conn.execute("""
+            INSERT INTO claims (
+                video_id, post_id, claim_type, claimant, asset_title,
+                found_in, action, noted_at, source_name, uploader, notes
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (
+            req.video_id,
+            req.post_id,
+            req.claim_type,
+            req.claimant,
+            req.asset_title,
+            req.found_in,
+            req.action,
+            datetime.now().isoformat(),
+            source_name,
+            uploader,
+            req.notes,
+        ))
+        claim_id = cur.lastrowid
+
+        # Update uploads & schedule
+        conn.execute("UPDATE uploads SET claim_status = 'claimed', rights_status = 'claimed' WHERE post_id = ?", (req.post_id,))
+        conn.execute("UPDATE schedule SET rights_status = 'claimed' WHERE post_id = ?", (req.post_id,))
+
+        # Extract and insert suggested blocklist additions
+        checker = HistoryClaimsChecker()
+        claim_dict = {
+            "id": claim_id,
+            "claimant": req.claimant,
+            "asset_title": req.asset_title,
+            "claim_type": req.claim_type,
+            "source_name": source_name,
+            "uploader": uploader,
+        }
+        suggestions = checker.generate_claim_suggestions(claim_dict)
+        for s in suggestions:
+            conn.execute("""
+                INSERT OR IGNORE INTO rights_blocklist (type, value, source_claim_id, status)
+                VALUES (?, ?, ?, 'pending_confirmation')
+            """, (s["type"], s["value"], claim_id))
+
+    return {
+        "success": True,
+        "claim_id": claim_id,
+        "post_id": req.post_id,
+        "suggestions_created": len(suggestions),
+        "suggestions": suggestions,
+    }
+
+
+@router.post("/hold")
+def hold_clip(req: HoldRequest):
+    """Sets video to private on YouTube and removes publishAt."""
+    gate = YouTubeRightsGate(db_path=backend_db.DB_PATH)
+    yt_service = None
+    try:
+        from dashboard.backend.youtube_api import get_youtube_service
+        yt_service = get_youtube_service()
+    except Exception:
+        pass
+
+    res = gate.mark_held(req.post_id, youtube_service=yt_service)
+    return res
+
+
+@router.post("/replace-from-reserve")
+def replace_claimed_clip_from_reserve(req: ReplaceFromReserveRequest):
+    """
+    Safe transactional pull-and-replace from reserve pool.
+    """
+    gate = YouTubeRightsGate(db_path=backend_db.DB_PATH)
+    yt_service = None
+    try:
+        from dashboard.backend.youtube_api import get_youtube_service
+        yt_service = get_youtube_service()
+    except Exception:
+        pass
+
+    res = gate.replace_from_reserve(
+        claimed_post_id=req.post_id,
+        action_on_claimed=req.action_on_claimed,
+        delete_confirmation=req.delete_confirmation,
+        youtube_service=yt_service,
+    )
+    if not res.get("success"):
+        raise HTTPException(status_code=400, detail=res.get("error", "Replacement failed"))
+    return res
+
+
+@router.post("/action-published")
+def handle_published_clip_action(req: PublishedActionRequest):
+    """
+    Handle action on recently published clip: keep, make_private, delete.
+    Deleting requires explicit typed confirmation "DELETE".
+    """
+    if req.action == "delete":
+        if req.delete_confirmation != "DELETE":
+            raise HTTPException(status_code=400, detail="Must type 'DELETE' to confirm deletion.")
+
+    yt_service = None
+    try:
+        from dashboard.backend.youtube_api import get_youtube_service
+        yt_service = get_youtube_service()
+    except Exception:
+        pass
+
+    with get_rw_connection() as conn:
+        if req.action == "make_private":
+            if yt_service and req.video_id:
+                yt_service.videos().update(
+                    part="status",
+                    body={"id": req.video_id, "status": {"privacyStatus": "private"}},
+                ).execute()
+            conn.execute("UPDATE uploads SET privacy = 'private', rights_status = 'held' WHERE post_id = ?", (req.post_id,))
+        elif req.action == "delete":
+            if yt_service and req.video_id:
+                yt_service.videos().delete(id=req.video_id).execute()
+            conn.execute("UPDATE uploads SET status = 'deleted' WHERE post_id = ?", (req.post_id,))
+        elif req.action == "keep":
+            conn.execute("UPDATE uploads SET rights_status = 'cleared' WHERE post_id = ?", (req.post_id,))
+
+    return {"success": True, "post_id": req.post_id, "action": req.action}
+
+
+@router.get("/claims")
+def get_claims_history(limit: int = 50):
+    """Returns list of registered claims."""
+    with get_ro_connection() as conn:
+        cur = conn.execute("SELECT * FROM claims ORDER BY id DESC LIMIT ?", (limit,))
+        return [dict(r) for r in cur.fetchall()]
+
+
+@router.get("/blocklist")
+def get_blocklist():
+    """Returns active blocklist entries and pending suggestions."""
+    with get_ro_connection() as conn:
+        cur = conn.execute("SELECT * FROM rights_blocklist ORDER BY id DESC")
+        entries = [dict(r) for r in cur.fetchall()]
+
+    active = [e for e in entries if e["status"] == "active"]
+    pending = [e for e in entries if e["status"] == "pending_confirmation"]
+    disabled = [e for e in entries if e["status"] == "disabled"]
+
+    return {
+        "active": active,
+        "pending": pending,
+        "disabled": disabled,
+        "total_active": len(active),
+        "total_pending": len(pending),
+    }
+
+
+@router.post("/blocklist/{entry_id}/approve")
+def approve_blocklist_suggestion(entry_id: int):
+    with get_rw_connection() as conn:
+        cur = conn.execute("UPDATE rights_blocklist SET status = 'active' WHERE id = ?", (entry_id,))
+        if cur.rowcount == 0:
+            raise HTTPException(status_code=404, detail="Entry not found")
+    return {"success": True, "entry_id": entry_id, "status": "active"}
+
+
+@router.post("/blocklist/{entry_id}/dismiss")
+def dismiss_blocklist_suggestion(entry_id: int):
+    with get_rw_connection() as conn:
+        cur = conn.execute("UPDATE rights_blocklist SET status = 'disabled' WHERE id = ?", (entry_id,))
+        if cur.rowcount == 0:
+            raise HTTPException(status_code=404, detail="Entry not found")
+    return {"success": True, "entry_id": entry_id, "status": "disabled"}
+
+
+@router.post("/blocklist/{entry_id}/toggle")
+def toggle_blocklist_entry(entry_id: int):
+    with get_rw_connection() as conn:
+        row = conn.execute("SELECT status FROM rights_blocklist WHERE id = ?", (entry_id,)).fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="Entry not found")
+        new_status = "disabled" if row["status"] == "active" else "active"
+        conn.execute("UPDATE rights_blocklist SET status = ? WHERE id = ?", (new_status, entry_id))
+    return {"success": True, "entry_id": entry_id, "status": new_status}
+
+
+@router.post("/blocklist/add")
+def add_manual_blocklist_entry(req: AddBlocklistRequest):
+    with get_rw_connection() as conn:
+        cur = conn.execute("""
+            INSERT INTO rights_blocklist (type, value, status)
+            VALUES (?, ?, 'active')
+        """, (req.type, req.value.strip()))
+        entry_id = cur.lastrowid
+    return {"success": True, "entry_id": entry_id}

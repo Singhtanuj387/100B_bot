@@ -3,6 +3,7 @@ import { Rail, type NavTab } from './components/Rail';
 import { AgentView } from './views/AgentView';
 import { ScheduleView } from './views/ScheduleView';
 import { YouTubeView } from './views/YouTubeView';
+import { ClaimsView } from './views/ClaimsView';
 
 interface PipelineStatusData {
   last_run?: {
@@ -68,6 +69,7 @@ export const App: React.FC = () => {
             onClearInitialPostId={() => setTargetClipForYouTube(null)}
           />
         )}
+        {activeTab === 'claims' && <ClaimsView />}
       </main>
     </div>
   );

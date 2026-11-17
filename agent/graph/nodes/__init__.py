@@ -11,6 +11,7 @@ from graph.nodes.update_registry import update_registry_node
 from graph.nodes.caption import caption_node
 from graph.nodes.edit import edit_node
 from graph.nodes.schedule import schedule_node
+from graph.nodes.rights_check import rights_check_node
 
 __all__ = [
     "discover_node",
@@ -22,6 +23,7 @@ __all__ = [
     "cheap_filters_node",
     "judge_node",
     "decide_node",
+    "rights_check_node",
     "human_review_node",
     "backfill_node",
     "update_registry_node",

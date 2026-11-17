@@ -42,5 +42,6 @@ class CurationState(TypedDict, total=False):
 
     # Final outputs
     edited_videos: List[Dict[str, Any]] # Branded output video paths
+    rights_evaluations: List[Dict[str, Any]] # Phase 6 Rights check evaluations
     final_schedule: List[Dict[str, Any]]# 24-slot hourly schedule
 

@@ -7,6 +7,7 @@ from dashboard.backend.routes_pipeline import router as pipeline_router
 from dashboard.backend.routes_agent import router as agent_router
 from dashboard.backend.routes_schedule import router as schedule_router
 from dashboard.backend.routes_youtube import router as youtube_router
+from dashboard.backend.routes_rights import router as rights_router
 from dashboard.backend.db import WORKSPACE_DIR
 
 FRONTEND_DIST = WORKSPACE_DIR / "dashboard" / "frontend" / "dist"
@@ -39,6 +40,7 @@ def create_app() -> FastAPI:
     app.include_router(agent_router)
     app.include_router(schedule_router)
     app.include_router(youtube_router)
+    app.include_router(rights_router)
 
     @app.get("/api/health")
     def health_check():

@@ -242,6 +242,172 @@ class AgentDatabase:
             """)
             conn.execute("CREATE INDEX IF NOT EXISTS idx_daily_runs_status ON daily_runs(status);")
 
+            # 11. Phase 6: Rights Check, Claims, Learned Blocklist & Provider Usage
+            self._migrate_rights_tables(conn)
+
+    def _migrate_rights_tables(self, conn: sqlite3.Connection) -> None:
+        """Initialize Phase 6 tables, columns, and initial claims seeds."""
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS rights_checks (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                post_id TEXT NOT NULL,
+                target_date TEXT NOT NULL,
+                checked_at TEXT NOT NULL,
+                layers_json TEXT NOT NULL,
+                risk_score INTEGER NOT NULL,
+                decision TEXT NOT NULL,
+                reasons_json TEXT NOT NULL,
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP
+            );
+        """)
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_rights_checks_post_id ON rights_checks(post_id);")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_rights_checks_target_date ON rights_checks(target_date);")
+
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS claims (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                video_id TEXT,
+                post_id TEXT NOT NULL,
+                claim_type TEXT NOT NULL,
+                claimant TEXT NOT NULL,
+                asset_title TEXT,
+                found_in TEXT,
+                action TEXT NOT NULL,
+                noted_at TEXT NOT NULL,
+                source_name TEXT,
+                uploader TEXT,
+                phashes_json TEXT,
+                notes TEXT,
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP
+            );
+        """)
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_claims_post_id ON claims(post_id);")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_claims_video_id ON claims(video_id);")
+
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS rights_blocklist (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                type TEXT NOT NULL,
+                value TEXT NOT NULL,
+                source_claim_id INTEGER REFERENCES claims(id),
+                status TEXT NOT NULL DEFAULT 'active',
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP
+            );
+        """)
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_rights_blocklist_type_val ON rights_blocklist(type, value);")
+
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS provider_usage (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                day TEXT NOT NULL,
+                provider TEXT NOT NULL,
+                calls INTEGER DEFAULT 0,
+                errors INTEGER DEFAULT 0,
+                UNIQUE(day, provider)
+            );
+        """)
+
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS uploads (
+                post_id TEXT PRIMARY KEY,
+                target_date TEXT,
+                video_id TEXT,
+                slot_time TEXT,
+                publish_at TEXT,
+                status TEXT DEFAULT 'pending',
+                last_error TEXT,
+                claim_status TEXT DEFAULT 'none',
+                rights_status TEXT DEFAULT 'unreviewed',
+                rights_risk INTEGER DEFAULT 0,
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP
+            );
+        """)
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_uploads_target_date ON uploads(target_date);")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_uploads_video_id ON uploads(video_id);")
+
+        # Extend uploads table non-destructively
+        try:
+            uploads_cols = [r[1] for r in conn.execute("PRAGMA table_info(uploads)")]
+            if "rights_status" not in uploads_cols:
+                conn.execute("ALTER TABLE uploads ADD COLUMN rights_status TEXT DEFAULT 'unreviewed'")
+            if "rights_risk" not in uploads_cols:
+                conn.execute("ALTER TABLE uploads ADD COLUMN rights_risk INTEGER DEFAULT 0")
+            if "claim_status" not in uploads_cols:
+                conn.execute("ALTER TABLE uploads ADD COLUMN claim_status TEXT DEFAULT 'none'")
+        except sqlite3.OperationalError:
+            pass
+
+        # Extend schedule table non-destructively
+        try:
+            sched_cols = [r[1] for r in conn.execute("PRAGMA table_info(schedule)")]
+            if "rights_status" not in sched_cols:
+                conn.execute("ALTER TABLE schedule ADD COLUMN rights_status TEXT DEFAULT 'unreviewed'")
+            if "rights_risk" not in sched_cols:
+                conn.execute("ALTER TABLE schedule ADD COLUMN rights_risk INTEGER DEFAULT 0")
+        except sqlite3.OperationalError:
+            pass
+
+        # Extend reserve_pool table non-destructively
+        try:
+            reserve_cols = [r[1] for r in conn.execute("PRAGMA table_info(reserve_pool)")]
+            if "rights_status" not in reserve_cols:
+                conn.execute("ALTER TABLE reserve_pool ADD COLUMN rights_status TEXT DEFAULT 'unreviewed'")
+            if "rights_risk" not in reserve_cols:
+                conn.execute("ALTER TABLE reserve_pool ADD COLUMN rights_risk INTEGER DEFAULT 0")
+            if "rights_checked_at" not in reserve_cols:
+                conn.execute("ALTER TABLE reserve_pool ADD COLUMN rights_checked_at TEXT")
+        except sqlite3.OperationalError:
+            pass
+
+        # Seed the two confirmed claims
+        cur = conn.execute("SELECT COUNT(*) FROM claims WHERE post_id = 'reddit_1xv7kmf'")
+        if cur.fetchone()[0] == 0:
+            conn.execute("""
+                INSERT INTO claims (
+                    video_id, post_id, claim_type, claimant, asset_title,
+                    found_in, action, noted_at, source_name, uploader, notes
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, (
+                "xwJJMYnUgSY",
+                "reddit_1xv7kmf",
+                "visual",
+                "CollabDRM",
+                "Collab ViralHog - Female Pheasant Not Impressed By Mating Dance",
+                "0:02 - 0:19",
+                "held",
+                "2026-11-16T18:00:00-05:00",
+                "r/funny",
+                "KnownUploader",
+                "Recorded, near-duplicates blocked, marked possible false match"
+            ))
+
+        cur = conn.execute("SELECT COUNT(*) FROM claims WHERE post_id = 'reddit_1xrfauk'")
+        if cur.fetchone()[0] == 0:
+            conn.execute("""
+                INSERT INTO claims (
+                    video_id, post_id, claim_type, claimant, asset_title,
+                    found_in, action, noted_at, source_name, uploader, notes
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, (
+                "f38cep_p8p8",
+                "reddit_1xrfauk",
+                "audio",
+                "SME",
+                "Eye of the Tiger by Survivor (SME for Volcano)",
+                "0:00 - 0:15",
+                "held",
+                "2026-11-16T18:00:00-05:00",
+                "r/funny",
+                "KnownUploader",
+                "Commercial music track identified by audio fingerprint"
+            ))
+
+        try:
+            conn.execute("UPDATE uploads SET claim_status = 'claimed', rights_status = 'claimed' WHERE post_id IN ('reddit_1xv7kmf', 'reddit_1xrfauk')")
+            conn.execute("UPDATE schedule SET rights_status = 'claimed' WHERE post_id IN ('reddit_1xv7kmf', 'reddit_1xrfauk')")
+        except sqlite3.OperationalError:
+            pass
+
     # --- LLM Judge Cache ---
     def get_cached_judge(self, file_hash: str) -> Optional[Dict[str, Any]]:
         """Retrieve cached Claude Vision evaluation for a video file hash."""
@@ -480,8 +646,9 @@ class AgentDatabase:
                 conn.execute("""
                     INSERT OR REPLACE INTO schedule (
                         target_date, slot_hour, slot_time, post_id, video_path,
-                        title, description, caption, source_url, uploader, status, created_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', ?)
+                        title, description, caption, source_url, uploader, status,
+                        rights_status, rights_risk, created_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?, ?)
                 """, (
                     target_date,
                     s["slot_hour"],
@@ -493,6 +660,8 @@ class AgentDatabase:
                     s.get("caption", ""),
                     s.get("source_url", ""),
                     s.get("uploader", ""),
+                    s.get("rights_status", "cleared"),
+                    s.get("rights_risk", 0),
                     now,
                 ))
 
@@ -875,4 +1044,182 @@ class AgentDatabase:
                 ORDER BY id DESC LIMIT 1
             """).fetchone()
             return dict(row) if row else None
+
+    # --- Phase 6: Rights Checks & Content ID Claims Persistence ---
+    def record_rights_check(
+        self,
+        post_id: str,
+        target_date: str,
+        layers: Dict[str, Any],
+        risk_score: int,
+        decision: str,
+        reasons: List[str],
+    ) -> int:
+        """Insert a rights_checks evaluation row."""
+        now = datetime.now().isoformat()
+        with self._get_connection() as conn:
+            cur = conn.execute("""
+                INSERT INTO rights_checks (
+                    post_id, target_date, checked_at, layers_json,
+                    risk_score, decision, reasons_json, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """, (
+                post_id,
+                target_date,
+                now,
+                json.dumps(layers, default=str),
+                risk_score,
+                decision,
+                json.dumps(reasons),
+                now,
+            ))
+            return cur.lastrowid
+
+    def get_rights_check(self, post_id: str) -> Optional[Dict[str, Any]]:
+        """Retrieve most recent rights check for post_id."""
+        with self._get_connection() as conn:
+            row = conn.execute("""
+                SELECT * FROM rights_checks WHERE post_id = ? ORDER BY id DESC LIMIT 1
+            """, (post_id,)).fetchone()
+            if row:
+                d = dict(row)
+                d["layers"] = json.loads(d["layers_json"]) if d.get("layers_json") else {}
+                d["reasons"] = json.loads(d["reasons_json"]) if d.get("reasons_json") else []
+                return d
+        return None
+
+    def record_claim(
+        self,
+        post_id: str,
+        claim_type: str,
+        claimant: str,
+        video_id: Optional[str] = None,
+        asset_title: Optional[str] = None,
+        found_in: Optional[str] = None,
+        action: str = "held",
+        source_name: Optional[str] = None,
+        uploader: Optional[str] = None,
+        phashes: Optional[List[str]] = None,
+        notes: Optional[str] = None,
+    ) -> int:
+        """Insert a Content ID claim row and auto-update upload status."""
+        now = datetime.now().isoformat()
+        with self._get_connection() as conn:
+            cur = conn.execute("""
+                INSERT INTO claims (
+                    video_id, post_id, claim_type, claimant, asset_title,
+                    found_in, action, noted_at, source_name, uploader,
+                    phashes_json, notes, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, (
+                video_id,
+                post_id,
+                claim_type,
+                claimant,
+                asset_title,
+                found_in,
+                action,
+                now,
+                source_name,
+                uploader,
+                json.dumps(phashes) if phashes else None,
+                notes,
+                now,
+            ))
+            claim_id = cur.lastrowid
+
+            # Update uploads and schedule tables
+            conn.execute("""
+                UPDATE uploads SET claim_status = 'claimed', rights_status = 'claimed'
+                WHERE post_id = ?
+            """, (post_id,))
+            conn.execute("""
+                UPDATE schedule SET rights_status = 'claimed'
+                WHERE post_id = ?
+            """, (post_id,))
+
+            return claim_id
+
+    def get_claims(self, limit: int = 50) -> List[Dict[str, Any]]:
+        """Retrieve registered Content ID claims."""
+        with self._get_connection() as conn:
+            cur = conn.execute("SELECT * FROM claims ORDER BY id DESC LIMIT ?", (limit,))
+            return [dict(r) for r in cur.fetchall()]
+
+    def add_blocklist_entry(
+        self,
+        entry_type: str,
+        value: str,
+        source_claim_id: Optional[int] = None,
+        status: str = "active",
+    ) -> int:
+        """Add learned or manual blocklist entry."""
+        with self._get_connection() as conn:
+            cur = conn.execute("""
+                INSERT INTO rights_blocklist (type, value, source_claim_id, status)
+                VALUES (?, ?, ?, ?)
+            """, (entry_type, value, source_claim_id, status))
+            return cur.lastrowid
+
+    def get_blocklist(self, status: Optional[str] = None) -> List[Dict[str, Any]]:
+        """Retrieve blocklist entries."""
+        with self._get_connection() as conn:
+            if status:
+                cur = conn.execute("SELECT * FROM rights_blocklist WHERE status = ? ORDER BY id DESC", (status,))
+            else:
+                cur = conn.execute("SELECT * FROM rights_blocklist ORDER BY id DESC")
+            return [dict(r) for r in cur.fetchall()]
+
+    def update_blocklist_status(self, entry_id: int, status: str) -> bool:
+        """Update blocklist entry status ('active', 'disabled', 'pending_confirmation')."""
+        with self._get_connection() as conn:
+            cur = conn.execute("UPDATE rights_blocklist SET status = ? WHERE id = ?", (status, entry_id))
+            return cur.rowcount > 0
+
+    def increment_provider_usage(self, provider: str, count: int = 1, day: Optional[str] = None) -> None:
+        """Increment daily API provider usage counter."""
+        use_day = day or datetime.now().strftime("%Y-%m-%d")
+        with self._get_connection() as conn:
+            conn.execute("""
+                INSERT INTO provider_usage (day, provider, calls, errors)
+                VALUES (?, ?, ?, 0)
+                ON CONFLICT(day, provider) DO UPDATE SET calls = calls + ?
+            """, (use_day, provider, count, count))
+
+    def get_provider_usage(self, provider: Optional[str] = None, day: Optional[str] = None) -> Dict[str, Any]:
+        """Get provider calls used today."""
+        use_day = day or datetime.now().strftime("%Y-%m-%d")
+        with self._get_connection() as conn:
+            if provider:
+                row = conn.execute(
+                    "SELECT calls, errors FROM provider_usage WHERE day = ? AND provider = ?",
+                    (use_day, provider)
+                ).fetchone()
+                return dict(row) if row else {"calls": 0, "errors": 0}
+            else:
+                cur = conn.execute("SELECT provider, calls, errors FROM provider_usage WHERE day = ?", (use_day,))
+                return {r["provider"]: {"calls": r["calls"], "errors": r["errors"]} for r in cur.fetchall()}
+
+    def get_claim_rates_by_subreddit(self) -> Dict[str, Any]:
+        """Compute claims per 100 published clips by subreddit."""
+        with self._get_connection() as conn:
+            cur_claims = conn.execute("""
+                SELECT source_name, COUNT(*) as claim_count
+                FROM claims
+                WHERE source_name IS NOT NULL
+                GROUP BY source_name
+            """).fetchall()
+            claims_by_source = {r["source_name"]: r["claim_count"] for r in cur_claims}
+
+            total_claims = conn.execute("SELECT COUNT(*) FROM claims").fetchone()[0]
+            total_uploads = conn.execute("SELECT COUNT(*) FROM uploads WHERE status = 'uploaded'").fetchone()[0]
+            overall_rate = round((total_claims / total_uploads) * 100, 2) if total_uploads > 0 else 0.0
+
+            return {
+                "overall_claims_per_100": overall_rate,
+                "total_claims": total_claims,
+                "total_published": total_uploads,
+                "by_source": claims_by_source,
+            }
+
 

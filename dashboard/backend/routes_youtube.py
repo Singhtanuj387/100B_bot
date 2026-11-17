@@ -162,7 +162,10 @@ def get_youtube_day(date: str):
             cur = conn.execute("""
                 SELECT s.slot_time, s.slot_hour, s.post_id, s.title, s.uploader, s.source_url, s.video_path,
                        COALESCE(u.status, s.status, 'queued') as status,
-                       u.video_id, u.uploaded_at, u.publish_at, u.privacy, u.last_error
+                       u.video_id, u.uploaded_at, u.publish_at, u.privacy, u.last_error,
+                       COALESCE(u.claim_status, 'none') as claim_status,
+                       COALESCE(u.rights_status, s.rights_status, 'unreviewed') as rights_status,
+                       COALESCE(u.rights_risk, s.rights_risk, 0) as rights_risk
                 FROM schedule s
                 LEFT JOIN uploads u ON s.post_id = u.post_id AND s.target_date = u.target_date
                 WHERE s.target_date = ?
@@ -240,6 +243,9 @@ def get_youtube_day(date: str):
             "time_display": time_disp,
             "status": status_label,
             "status_detail": status_detail,
+            "claim_status": r.get("claim_status") or "none",
+            "rights_status": r.get("rights_status") or "unreviewed",
+            "rights_risk": r.get("rights_risk") or 0,
             "views": stats_obj.get("viewCount"),
             "likes": stats_obj.get("likeCount"),
             "youtube_url": f"https://www.youtube.com/shorts/{vid_id}" if vid_id else None,

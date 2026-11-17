@@ -14,6 +14,9 @@ export interface YouTubeClipItem {
   time_display: string;
   status: string;
   status_detail: string;
+  claim_status?: string;
+  rights_status?: string;
+  rights_risk?: number;
   views?: string | number | null;
   likes?: string | number | null;
   youtube_url: string | null;
@@ -293,8 +296,23 @@ export const YouTubeView: React.FC<YouTubeViewProps> = ({
                         </span>
                       </div>
 
-                      {/* Status Pill */}
-                      <div className="shrink-0">
+                      {/* Status Pill & Rights Badges */}
+                      <div className="shrink-0 flex items-center gap-[6px]">
+                        {clip.claim_status === 'claimed' && (
+                          <span className="font-ui text-[11px] font-bold px-[8px] py-[3px] rounded-[6px] bg-[#D4412F]/15 text-[#D4412F] border border-[#D4412F]/30 uppercase tracking-wider">
+                            Claimed
+                          </span>
+                        )}
+                        {clip.rights_status === 'held' && (
+                          <span className="font-ui text-[11px] font-bold px-[8px] py-[3px] rounded-[6px] bg-[#D99A1E]/15 text-[#D99A1E] border border-[#D99A1E]/30 uppercase tracking-wider">
+                            Held
+                          </span>
+                        )}
+                        {clip.rights_status === 'needs_check' && (
+                          <span className="font-ui text-[11px] font-bold px-[8px] py-[3px] rounded-[6px] bg-[#3B82F6]/15 text-[#3B82F6] border border-[#3B82F6]/30 uppercase tracking-wider">
+                            Needs Check
+                          </span>
+                        )}
                         <StatusPill status={clip.status} />
                       </div>
                     </div>
@@ -313,10 +331,25 @@ export const YouTubeView: React.FC<YouTubeViewProps> = ({
                 {/* Clip info header */}
                 <div className="flex items-start justify-between gap-[12px]">
                   <div className="min-w-0 flex-1">
-                    <div className="flex items-center gap-[8px]">
+                    <div className="flex items-center gap-[8px] flex-wrap">
                       <span className="font-ui font-bold text-[13px] text-[#6F7A73]">
                         {selectedClip.time_display || formatTimeET(selectedClip.slot_time)}
                       </span>
+                      {selectedClip.claim_status === 'claimed' && (
+                        <span className="font-ui text-[11px] font-bold px-[8px] py-[3px] rounded-[6px] bg-[#D4412F]/15 text-[#D4412F] border border-[#D4412F]/30 uppercase tracking-wider">
+                          Claimed
+                        </span>
+                      )}
+                      {selectedClip.rights_status === 'held' && (
+                        <span className="font-ui text-[11px] font-bold px-[8px] py-[3px] rounded-[6px] bg-[#D99A1E]/15 text-[#D99A1E] border border-[#D99A1E]/30 uppercase tracking-wider">
+                          Held
+                        </span>
+                      )}
+                      {selectedClip.rights_status === 'needs_check' && (
+                        <span className="font-ui text-[11px] font-bold px-[8px] py-[3px] rounded-[6px] bg-[#3B82F6]/15 text-[#3B82F6] border border-[#3B82F6]/30 uppercase tracking-wider">
+                          Needs Check
+                        </span>
+                      )}
                       <StatusPill status={selectedClip.status} />
                     </div>
                     <h3 className="font-heading font-extrabold text-[18px] text-[#1D3B33] mt-[6px] line-clamp-2 leading-tight">
@@ -363,10 +396,15 @@ export const YouTubeView: React.FC<YouTubeViewProps> = ({
                 </div>
 
                 {/* Status details & metrics */}
-                <div className="p-[14px] rounded-[10px] bg-[#EDF0EC] text-[#1D3B33] font-ui text-[13px]">
+                <div className="p-[14px] rounded-[10px] bg-[#EDF0EC] text-[#1D3B33] font-ui text-[13px] flex flex-col gap-[4px]">
                   <p className="font-medium">{selectedClip.status_detail}</p>
+                  {selectedClip.claim_status === 'claimed' && (
+                    <p className="text-[12px] text-[#D4412F] font-semibold">
+                      Content ID claim detected. Visit the Claims tab to review claimant or take action.
+                    </p>
+                  )}
                   {selectedClip.views && (
-                    <p className="text-[12px] text-[#6F7A73] mt-[4px]">
+                    <p className="text-[12px] text-[#6F7A73]">
                       Live views: {Number(selectedClip.views).toLocaleString()} · Likes: {selectedClip.likes ? Number(selectedClip.likes).toLocaleString() : '—'}
                     </p>
                   )}
