@@ -858,3 +858,66 @@ def test_put_schedule_move_one_slot_retimes_only_that_clip(client, test_db_setup
     for h in [14, 17, 19, 20, 21]:
         assert sched_rows[f"clip_{h}"] == h
         assert uploads_rows[f"clip_{h}"] == f"{tomorrow_str}T{h:02d}:00:00-05:00"
+
+
+def test_put_schedule_preserves_all_comments_and_blank_lines(client, test_db_setup, tmp_path, monkeypatch):
+    """
+    Test that updating schedule with PUT /api/schedule modifies peak_hours in place
+    and preserves ALL comments and blank lines throughout agent/config.yaml,
+    specifically including '# Allowed sources and exploration targets (Reddit is primary; Twitter is experimental)'
+    and the blank line before it. Compares the whole file.
+    """
+    real_agent_config = backend_db.WORKSPACE_DIR / "agent" / "config.yaml"
+    original_content = real_agent_config.read_text(encoding="utf-8")
+
+    test_agent_cfg = tmp_path / "agent_config.yaml"
+    test_agent_cfg.write_text(original_content, encoding="utf-8")
+
+    test_uploader_cfg = tmp_path / "uploader_config.yaml"
+    test_uploader_cfg.write_text("upload:\n  max_uploads_per_day: 6\n", encoding="utf-8")
+
+    monkeypatch.setattr(routes_sched, "AGENT_CONFIG_PATH", test_agent_cfg)
+    monkeypatch.setattr(routes_sched, "UPLOADER_CONFIG_PATH", test_uploader_cfg)
+
+    # PUT /api/schedule with new slots: change 12:00 to 22:00
+    new_slots = ["14:00", "17:00", "19:00", "20:00", "21:00", "22:00"]
+    resp = client.put(
+        "/api/schedule",
+        json={"videos_per_day": 6, "slots": new_slots},
+        headers={"Content-Type": "application/json", "X-Dashboard-Request": "1"},
+    )
+    assert resp.status_code == 200
+
+    # Read saved file content and compare whole file
+    saved_content = test_agent_cfg.read_text(encoding="utf-8")
+
+    expected_comment = "# Allowed sources and exploration targets (Reddit is primary; Twitter is experimental)"
+    assert expected_comment in saved_content
+
+    # Normalize line endings
+    normalized_saved = saved_content.replace("\r\n", "\n")
+    expected_block = (
+        "  - 22:00\n\n"
+        "# Allowed sources and exploration targets (Reddit is primary; Twitter is experimental)\n"
+        "allowed_sources:"
+    )
+    assert expected_block in normalized_saved
+
+    # Whole-file comparison: only the peak_hours list elements differ
+    orig_lines = [l.strip() for l in original_content.replace("\r\n", "\n").splitlines()]
+    saved_lines = [l.strip() for l in normalized_saved.splitlines()]
+
+    orig_peak_idx = orig_lines.index("peak_hours:")
+    orig_allowed_idx = orig_lines.index("allowed_sources:")
+
+    saved_peak_idx = saved_lines.index("peak_hours:")
+    saved_allowed_idx = saved_lines.index("allowed_sources:")
+
+    # Everything before peak_hours must be identical
+    assert orig_lines[:orig_peak_idx] == saved_lines[:saved_peak_idx]
+
+    # Everything after allowed_sources must be identical
+    assert orig_lines[orig_allowed_idx:] == saved_lines[saved_allowed_idx:]
+
+    # The comment line between them must match
+    assert expected_comment in saved_lines[saved_peak_idx:saved_allowed_idx]

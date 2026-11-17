@@ -377,7 +377,18 @@ async def update_schedule(request: Request, body: ScheduleUpdateRequest):
 
     # Step 4: Write updated configs with ruamel.yaml preserving comments atomically
     agent_cfg["target_count"] = videos_per_day
-    agent_cfg["peak_hours"] = sorted_slots
+    # Update peak_hours list in-place (clear it and fill it again) so its comments stay attached
+    if "peak_hours" in agent_cfg and hasattr(agent_cfg["peak_hours"], "clear"):
+        seq = agent_cfg["peak_hours"]
+        last_idx = len(seq) - 1
+        last_comment = seq.ca.items.get(last_idx) if hasattr(seq, "ca") and seq.ca.items else None
+        seq.clear()
+        for s in sorted_slots:
+            seq.append(s)
+        if last_comment and len(seq) > 0 and hasattr(seq, "ca"):
+            seq.ca.items[len(seq) - 1] = last_comment
+    else:
+        agent_cfg["peak_hours"] = sorted_slots
     write_yaml_atomically(AGENT_CONFIG_PATH, agent_yaml, agent_cfg)
 
     uploader_yaml, uploader_cfg = read_yaml_preserving_comments(UPLOADER_CONFIG_PATH)
