@@ -135,12 +135,7 @@ export const AgentView: React.FC<AgentViewProps> = ({ onSelectClipForYouTube }) 
 
   // Format day picker card label: e.g. "Sun 8"
   const formatPickerLabel = (dateStr: string) => {
-    try {
-      const dt = new Date(`${dateStr}T12:00:00-05:00`);
-      return dt.toLocaleDateString('en-US', { timeZone: 'America/New_York', weekday: 'short', day: 'numeric' });
-    } catch {
-      return dateStr;
-    }
+    return formatDateET(dateStr, { weekday: 'short', day: 'numeric' });
   };
 
   // Funnel calculations

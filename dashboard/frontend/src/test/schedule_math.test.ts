@@ -11,6 +11,7 @@ import {
   generatePreset,
   formatTimeET,
   formatWeekdayET,
+  formatDateET,
 } from '../utils/scheduleMath';
 
 describe('scheduleMath utils', () => {
@@ -119,6 +120,24 @@ describe('scheduleMath utils', () => {
       expect(formatTimeET('18:30')).toBe('6:30 PM ET');
       expect(formatTimeET(720)).toBe('12 PM ET');
       expect(formatTimeET(1110)).toBe('6:30 PM ET');
+    });
+
+    it('formats date-only strings without backward timezone shift in America/New_York', () => {
+      // YYYY-MM-DD date-only strings must not shift backwards into the previous calendar day
+      expect(formatDateET('2026-11-17')).toBe('Tue, Nov 17');
+      expect(formatDateET('2026-11-17', { month: 'short', day: 'numeric' })).toBe('Nov 17');
+      expect(formatWeekdayET('2026-11-17')).toBe('Tue');
+
+      // Mon 16
+      expect(formatDateET('2026-11-16')).toBe('Mon, Nov 16');
+      expect(formatDateET('2026-11-16', { month: 'short', day: 'numeric' })).toBe('Nov 16');
+      expect(formatDateET('2026-11-16', { weekday: 'short', day: 'numeric' })).toBe('Mon 16');
+      expect(formatWeekdayET('2026-11-16')).toBe('Mon');
+
+      // Sun 15
+      expect(formatDateET('2026-11-15')).toBe('Sun, Nov 15');
+      expect(formatDateET('2026-11-15', { month: 'short', day: 'numeric' })).toBe('Nov 15');
+      expect(formatWeekdayET('2026-11-15')).toBe('Sun');
     });
   });
 });

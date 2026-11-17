@@ -61,10 +61,11 @@ export function formatTimeET(
   // 3. Otherwise parse as Date / ISO timestamp
   let dt: Date;
   if (typeof input === 'string') {
-    dt = new Date(input);
-    if (isNaN(dt.getTime())) {
+    const parsed = parseDateSafe(input);
+    if (!parsed) {
       return `${input}${includeLabel ? ` ${TZ_LABEL}` : ''}`;
     }
+    dt = parsed;
   } else {
     dt = input;
   }
@@ -96,13 +97,39 @@ export function formatTimeET(
 }
 
 /**
+ * Parse any date input safely into a Date object.
+ * Critical: date-only strings like "YYYY-MM-DD" are parsed by ECMAScript new Date("YYYY-MM-DD")
+ * as UTC midnight (00:00:00Z). In timezones west of UTC such as America/New_York (UTC-5/UTC-4),
+ * UTC midnight shifts the date backwards to the previous evening (e.g. 2026-11-17 becomes Nov 16, 7:00 PM EST).
+ * Setting the time to midday UTC ("YYYY-MM-DDT12:00:00Z") guarantees that formatting in America/New_York
+ * remains strictly on the exact calendar date (7:00 AM EST or 8:00 AM EDT).
+ */
+export function parseDateSafe(input: string | Date | null | undefined): Date | null {
+  if (!input) return null;
+  if (input instanceof Date) return isNaN(input.getTime()) ? null : input;
+  if (typeof input !== 'string') return null;
+
+  const trimmed = input.trim();
+  if (!trimmed) return null;
+
+  const dateOnlyMatch = trimmed.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (dateOnlyMatch) {
+    const dt = new Date(`${trimmed}T12:00:00Z`);
+    return isNaN(dt.getTime()) ? null : dt;
+  }
+
+  const dt = new Date(trimmed);
+  return isNaN(dt.getTime()) ? null : dt;
+}
+
+/**
  * Format weekday in ET. E.g. "Sun", "Mon", "Tue"
  */
 export function formatWeekdayET(input: string | Date | null | undefined): string {
   if (!input) return '';
   try {
-    const dt = typeof input === 'string' ? new Date(input) : input;
-    if (isNaN(dt.getTime())) return '';
+    const dt = parseDateSafe(input);
+    if (!dt) return '';
     return new Intl.DateTimeFormat('en-US', {
       timeZone: CHANNEL_TIMEZONE,
       weekday: 'short',
@@ -121,8 +148,26 @@ export function formatDateET(
 ): string {
   if (!input) return '';
   try {
-    const dt = typeof input === 'string' ? new Date(input) : input;
-    if (isNaN(dt.getTime())) return String(input);
+    const dt = parseDateSafe(input);
+    if (!dt) return String(input);
+
+    // If only weekday and day are requested (e.g. { weekday: 'short', day: 'numeric' }),
+    // standard en-US formatToParts returns "16 Mon". In dashboard UI ("Mon 16", "Sun 8"),
+    // English convention requires weekday before day ("Mon 16").
+    if (options.weekday && options.day && !options.month && !options.year) {
+      const parts = new Intl.DateTimeFormat('en-US', {
+        timeZone: CHANNEL_TIMEZONE,
+        ...options,
+      }).formatToParts(dt);
+      let w = '';
+      let d = '';
+      for (const p of parts) {
+        if (p.type === 'weekday') w = p.value;
+        if (p.type === 'day') d = p.value;
+      }
+      if (w && d) return `${w} ${d}`;
+    }
+
     return new Intl.DateTimeFormat('en-US', {
       timeZone: CHANNEL_TIMEZONE,
       ...options,
