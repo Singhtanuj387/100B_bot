@@ -156,10 +156,18 @@ def get_rights_status():
     has_audd_key = bool(os.environ.get("AUDD_API_TOKEN") or os.environ.get("AUDD_API_KEY"))
     has_vision_key = bool(os.environ.get("GOOGLE_VISION_API_KEY"))
 
+    audd_calls = usage_rows.get("audd", {}).get("calls", 0)
+    audd_errors = usage_rows.get("audd", {}).get("errors", 0)
+    vision_calls = usage_rows.get("google_vision", {}).get("calls", 0)
+    vision_errors = usage_rows.get("google_vision", {}).get("errors", 0)
+
+    token_val = (os.environ.get("AUDD_API_TOKEN") or os.environ.get("AUDD_API_KEY") or "").strip()
+    is_audd_invalid = bool(audd_errors > 0 or (has_audd_key and token_val == "f3ed6e678f1b19d032e2a0c40ed795d9"))
+
     active_layers = {
         "layer1_agency_ocr": True,
         "layer2a_local_music": True,
-        "layer2b_fingerprint": has_audd_key and not is_local_only,
+        "layer2b_fingerprint": has_audd_key and not is_local_only and not is_audd_invalid,
         "layer3_cloud_vision": has_vision_key and not is_local_only,
         "layer4_scheduled_gate": True,
         "layer5_history_learned": True,
@@ -172,12 +180,16 @@ def get_rights_status():
         "providers": {
             "audd": {
                 "configured": has_audd_key,
-                "calls_today": usage_rows.get("audd", {}).get("calls", 0),
+                "calls_today": audd_calls,
+                "errors_today": audd_errors,
                 "daily_cap": audd_cap,
+                "status": "error" if is_audd_invalid else ("active" if has_audd_key and not is_local_only else "idle"),
+                "error_message": "AudD: invalid token" if is_audd_invalid else None,
             },
             "google_vision": {
                 "configured": has_vision_key,
-                "calls_today": usage_rows.get("google_vision", {}).get("calls", 0),
+                "calls_today": vision_calls,
+                "errors_today": vision_errors,
                 "daily_cap": vision_cap,
                 "monthly_free_tier": 1000,
             },

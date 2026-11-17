@@ -178,6 +178,77 @@ def test_audio_checker_caps_and_samples():
     assert len(samples[0][1]) == 12 * 16000  # 12 seconds exactly
 
 
+def test_audd_provider_error_handling(monkeypatch):
+    """
+    Test that AudD error responses (e.g. error 900: invalid token) are treated as provider errors:
+    status = 'error', provider_errors incremented, reasons include 'provider_error_review',
+    decision escalates to 'review', and errors counter is recorded.
+    """
+    mock_provider = MagicMock()
+    mock_provider.recognize.return_value = {
+        "status": "error",
+        "recognized": False,
+        "error": "Recognition failed: authorization failed: the provided api_token is incorrect, invalid, or inactive.",
+        "error_code": 900,
+    }
+
+    mock_detector = MagicMock()
+    mock_detector.detect_music.return_value = {
+        "music_seconds": 12.0,
+        "music_fraction": 0.8,
+        "has_music": True,
+        "model_active": True,
+    }
+
+    audio_checker = AudioRightsChecker(
+        local_detector=mock_detector,
+        provider=mock_provider,
+        daily_cap=40,
+    )
+
+    # Monkeypatch extract_audio_16k_mono to return synthetic audio
+    fake_audio = np.zeros(16000 * 15, dtype=np.float32)
+    import core.rights.audio_check as ac_mod
+    monkeypatch.setattr(ac_mod, "extract_audio_16k_mono", lambda p: (fake_audio, 15.0))
+
+    audio_res = audio_checker.check_audio("test_video.mp4", current_daily_calls=0)
+
+    # Must treat status as error, count provider errors, and not call further samples
+    assert audio_res["status"] == "error"
+    assert audio_res["provider_calls_made"] == 1
+    assert audio_res["provider_errors"] == 1
+    assert audio_res["provider_error_code"] == 900
+    assert "authorization failed" in audio_res["error"]
+
+    # Now verify RightsCheckEngine handles this audio_res
+    mock_db = MagicMock()
+    mock_db.get_provider_usage.return_value = {"calls": 0, "errors": 0}
+    mock_db.count_real_published.return_value = 0
+
+    engine = RightsCheckEngine(
+        db=mock_db,
+        audio_checker=audio_checker,
+    )
+
+    import core.rights.engine as eng_mod
+    monkeypatch.setattr(
+        eng_mod,
+        "compute_video_phashes",
+        lambda *args, **kwargs: ["0" * 16 + ":" + "0" * 16],
+    )
+
+    eval_res = engine.evaluate_clip(
+        post_id="post_test_audd_err",
+        video_path="test_video.mp4",
+        title="Test Clip",
+    )
+
+    assert "provider_error_review" in eval_res["reasons"]
+    assert eval_res["decision"] == "review"
+    # Ensure provider usage was incremented with errors
+    mock_db.increment_provider_usage.assert_called_with("audd", count=1, errors=1)
+
+
 # ==============================================================================
 # 3. LAYER 3: VISUAL MATCH CHECK
 # ==============================================================================

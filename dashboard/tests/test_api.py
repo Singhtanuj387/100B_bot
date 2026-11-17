@@ -1017,7 +1017,33 @@ def test_rights_status_api(client, test_db_setup):
     assert "unreviewed_policy" in data
     assert "active_layers" in data
     assert "providers" in data
+    assert "audd" in data["providers"]
+    assert "google_vision" in data["providers"]
+    assert "errors_today" in data["providers"]["audd"]
     assert "stats" in data
+
+
+def test_rights_status_api_reports_invalid_audd_token(client, test_db_setup, monkeypatch):
+    """Test that invalid AudD token or recorded errors sets provider status to error and returns 'AudD: invalid token'."""
+    today_str = datetime.now().strftime("%Y-%m-%d")
+    conn = sqlite3.connect(str(test_db_setup))
+    conn.execute("""
+        INSERT OR REPLACE INTO provider_usage (day, provider, calls, errors)
+        VALUES (?, 'audd', 13, 13)
+    """, (today_str,))
+    conn.commit()
+    conn.close()
+
+    monkeypatch.setenv("AUDD_API_TOKEN", "f3ed6e678f1b19d032e2a0c40ed795d9")
+
+    resp = client.get("/api/rights/status")
+    assert resp.status_code == 200
+    data = resp.json()
+    audd_prov = data["providers"]["audd"]
+    assert audd_prov["status"] == "error"
+    assert audd_prov["errors_today"] == 13
+    assert audd_prov["error_message"] == "AudD: invalid token"
+    assert data["active_layers"]["layer2b_fingerprint"] is False
 
 
 def test_rights_review_queue_api(client, test_db_setup, monkeypatch):

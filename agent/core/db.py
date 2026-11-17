@@ -1183,15 +1183,23 @@ class AgentDatabase:
             cur = conn.execute("UPDATE rights_blocklist SET status = ? WHERE id = ?", (status, entry_id))
             return cur.rowcount > 0
 
-    def increment_provider_usage(self, provider: str, count: int = 1, day: Optional[str] = None) -> None:
-        """Increment daily API provider usage counter."""
+    def increment_provider_usage(
+        self,
+        provider: str,
+        count: int = 1,
+        errors: int = 0,
+        day: Optional[str] = None,
+    ) -> None:
+        """Increment daily API provider usage counter and error counter."""
         use_day = day or datetime.now().strftime("%Y-%m-%d")
         with self._get_connection() as conn:
             conn.execute("""
                 INSERT INTO provider_usage (day, provider, calls, errors)
-                VALUES (?, ?, ?, 0)
-                ON CONFLICT(day, provider) DO UPDATE SET calls = calls + ?
-            """, (use_day, provider, count, count))
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT(day, provider) DO UPDATE SET
+                    calls = calls + ?,
+                    errors = errors + ?
+            """, (use_day, provider, count, errors, count, errors))
 
     def get_provider_usage(self, provider: Optional[str] = None, day: Optional[str] = None) -> Dict[str, Any]:
         """Get provider calls used today."""

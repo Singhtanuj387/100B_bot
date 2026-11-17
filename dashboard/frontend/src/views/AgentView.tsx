@@ -165,6 +165,8 @@ export const AgentView: React.FC<AgentViewProps> = ({ onSelectClipForYouTube }) 
     rights_visual_match: 'Visual match on web',
     rights_history: 'Claim history / duplicate',
     rights_social_watermark: 'Social watermark (TikTok/IG/FB)',
+    provider_error_review: 'Provider error (AudD/Vision)',
+    rights_music_unrecognized: 'Unrecognized music (needs review)',
     other: 'Other criteria',
   };
 

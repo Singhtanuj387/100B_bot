@@ -3,6 +3,7 @@ import {
   ShieldAlert,
   ShieldCheck,
   AlertTriangle,
+  AlertCircle,
   ExternalLink,
   CheckCircle2,
   Lock,
@@ -20,8 +21,21 @@ interface RightsStatusData {
   unreviewed_policy: string;
   active_layers: Record<string, boolean>;
   providers: {
-    audd: { configured: boolean; calls_today: number; daily_cap: number };
-    google_vision: { configured: boolean; calls_today: number; daily_cap: number; monthly_free_tier: number };
+    audd: {
+      configured: boolean;
+      calls_today: number;
+      errors_today?: number;
+      daily_cap: number;
+      status?: string;
+      error_message?: string;
+    };
+    google_vision: {
+      configured: boolean;
+      calls_today: number;
+      errors_today?: number;
+      daily_cap: number;
+      monthly_free_tier: number;
+    };
   };
   stats: {
     total_claims: number;
@@ -419,6 +433,15 @@ export const ClaimsView: React.FC = () => {
           </div>
         )}
 
+        {(status?.providers.audd.status === "error" || (status?.providers.audd.errors_today ?? 0) > 0 || status?.providers.audd.error_message) && (
+          <div className="p-[14px] rounded-[12px] bg-[#FEE2E2] border border-[#DC2626]/30 flex items-start gap-[12px]">
+            <AlertCircle className="text-[#DC2626] shrink-0 mt-0.5" size={18} />
+            <div className="font-ui text-[13px] text-[#991B1B] leading-relaxed">
+              <strong>AudD Provider Error:</strong> The AudD API token is incorrect or inactive (requires an active trial or subscription on <a href="https://dashboard.audd.io" target="_blank" rel="noopener noreferrer" className="underline font-semibold">dashboard.audd.io</a>). Commercial track fingerprinting is paused; music-heavy clips are routed to review with <code className="px-1.5 py-0.5 bg-white/70 rounded text-[12px] font-mono">provider_error_review</code>.
+            </div>
+          </div>
+        )}
+
         {/* Layer Badges & Daily Caps */}
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-[14px]">
           <div className="p-[14px] rounded-[12px] bg-[#EDF0EC] flex flex-col gap-[6px]">
@@ -433,9 +456,19 @@ export const ClaimsView: React.FC = () => {
             <div className="flex items-center gap-[6px] text-[#2E7D4F] font-semibold text-[14px]">
               <CheckCircle2 size={16} /> Active (Local ONNX)
             </div>
-            <span className="font-ui text-[11px] text-[#6F7A73]">
-              AudD Fingerprint: {status?.providers.audd.calls_today ?? 0} / {status?.providers.audd.daily_cap ?? 40} today
-            </span>
+            {status?.providers.audd.status === "error" || (status?.providers.audd.errors_today ?? 0) > 0 || status?.providers.audd.error_message ? (
+              <div className="flex items-center gap-[5px] text-[#DC2626] font-semibold text-[12px]">
+                <AlertCircle size={14} className="shrink-0" />
+                <span>AudD: invalid token</span>
+                <span className="text-[#6F7A73] font-normal text-[11px]">
+                  ({status?.providers.audd.calls_today ?? 0} calls, {status?.providers.audd.errors_today ?? 0} errors)
+                </span>
+              </div>
+            ) : (
+              <span className="font-ui text-[11px] text-[#6F7A73]">
+                AudD Fingerprint: {status?.providers.audd.calls_today ?? 0} / {status?.providers.audd.daily_cap ?? 40} today
+              </span>
+            )}
           </div>
 
           <div className="p-[14px] rounded-[12px] bg-[#EDF0EC] flex flex-col gap-[6px]">

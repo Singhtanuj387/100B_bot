@@ -62,6 +62,19 @@ class RightsCheckEngine:
         })
         self.prefer_max_seconds = float(rights_cfg.get("prefer_max_seconds", 60.0))
         self.on_provider_error = rights_cfg.get("on_provider_error", "review")
+        self._alerted_providers = set()
+
+    def _trigger_provider_error_alert(self, provider_name: str, error_detail: str) -> None:
+        """Trigger desktop notification and log alert once per provider."""
+        prov_key = provider_name.lower()
+        if prov_key not in self._alerted_providers:
+            self._alerted_providers.add(prov_key)
+            msg = f"{provider_name} returned error: {error_detail}. Music-heavy clips routed to review."
+            try:
+                from core.rights.alerts import notify_rights_alert
+                notify_rights_alert(f"{provider_name} Provider Error", msg)
+            except Exception as e:
+                logger.warning(f"Could not dispatch provider error alert: {e}")
 
     def evaluate_clip(
         self,
@@ -246,17 +259,23 @@ class RightsCheckEngine:
             current_daily_calls=cur_calls,
         )
 
-        # Record calls made in DB if any
-        if audio_res.get("provider_calls_made", 0) > 0 and self.db and hasattr(self.db, "increment_provider_usage"):
+        # Record calls made and errors in DB if any
+        calls_count = audio_res.get("provider_calls_made", 0)
+        errors_count = audio_res.get("provider_errors", 0)
+        if (calls_count > 0 or errors_count > 0) and self.db and hasattr(self.db, "increment_provider_usage"):
             try:
-                self.db.increment_provider_usage("audd", count=audio_res["provider_calls_made"])
-            except Exception:
-                pass
+                self.db.increment_provider_usage("audd", count=calls_count, errors=errors_count)
+            except Exception as e:
+                logger.warning(f"Failed to increment provider usage: {e}")
 
         if audio_res.get("hard_block_music"):
             reasons.append("rights_music")
             has_hard_block = True
             risk_score += self.weights.get("hard_block_score", 100)
+        elif audio_res.get("status") == "error":
+            reasons.append("provider_error_review")
+            risk_score += self.weights.get("unrecognized_music", 35)
+            self._trigger_provider_error_alert("AudD", audio_res.get("error", "AudD API token error"))
         elif audio_res.get("review_music"):
             reasons.append("rights_music_unrecognized")
             risk_score += self.weights.get("unrecognized_music", 35)
@@ -338,10 +357,11 @@ class RightsCheckEngine:
             decision = "pass"
 
         # Safe fallback on provider error
-        if self.on_provider_error == "review" and decision == "pass":
+        if self.on_provider_error == "review" and decision != "block":
             if audio_res.get("status") == "error" or vision_res.get("status") == "error":
                 decision = "review"
-                reasons.append("provider_error_review")
+                if "provider_error_review" not in reasons:
+                    reasons.append("provider_error_review")
 
         evaluation_result = {
             "post_id": post_id,

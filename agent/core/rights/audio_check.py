@@ -188,11 +188,18 @@ class AudDProvider(AudioRecognitionProvider):
                     }
                 return {"status": "success", "recognized": False}
             else:
-                err_msg = res.get("error", {}).get("error_message", "Unknown AudD error")
-                return {"status": "error", "recognized": False, "error": err_msg}
+                err_dict = res.get("error") or {}
+                err_msg = err_dict.get("error_message") or res.get("error_message") or "Unknown AudD error"
+                err_code = err_dict.get("error_code")
+                return {
+                    "status": "error",
+                    "recognized": False,
+                    "error": err_msg,
+                    "error_code": err_code,
+                }
         except Exception as e:
             logger.warning(f"AudD API request failed: {e}")
-            return {"status": "error", "recognized": False, "error": str(e)}
+            return {"status": "error", "recognized": False, "error": str(e), "error_code": None}
 
 
 class AudioRightsChecker:
@@ -306,6 +313,9 @@ class AudioRightsChecker:
         # Step 2B: Provider fingerprinting
         samples = self.get_audio_samples(audio_arr, duration)
         calls_made = 0
+        provider_errors = 0
+        last_error_msg = None
+        last_error_code = None
         recognized_track = None
 
         for idx, (offset_s, sample_arr) in enumerate(samples):
@@ -330,6 +340,14 @@ class AudioRightsChecker:
                 calls_made += 1
                 track_info = self.provider.recognize(wav_bytes)
 
+            if track_info.get("status") == "error":
+                provider_errors += 1
+                last_error_msg = track_info.get("error", "AudD API error")
+                last_error_code = track_info.get("error_code")
+                logger.warning(f"AudD recognition error: {last_error_msg} (code: {last_error_code})")
+                # Do not call second sample if first errored
+                break
+
             if track_info.get("recognized"):
                 recognized_track = track_info
                 break
@@ -338,10 +356,22 @@ class AudioRightsChecker:
         # 1. Hard block if commercial track recognized (> threshold)
         hard_block_music = bool(recognized_track and recognized_track.get("recognized"))
 
-        # 2. Review if music detected locally (> 5s or > 25% of clip) but unrecognized
+        # 2. Check provider error
+        has_provider_error = bool(provider_errors > 0)
+
+        # 3. Review if music detected locally (> 4.5s or > 25% of clip)
         review_music = False
         if not hard_block_music and has_music and (music_seconds > 4.5 or music_fraction > 0.25):
             review_music = True
+
+        if has_provider_error:
+            status = "error"
+        elif hard_block_music:
+            status = "recognized"
+        elif review_music:
+            status = "unrecognized_music"
+        else:
+            status = "pass"
 
         return {
             "music_seconds": music_seconds,
@@ -351,6 +381,10 @@ class AudioRightsChecker:
             "hard_block_music": hard_block_music,
             "review_music": review_music,
             "provider_calls_made": calls_made,
+            "provider_errors": provider_errors,
+            "provider_error_msg": last_error_msg,
+            "provider_error_code": last_error_code,
             "cap_reached": (safe_calls + calls_made >= self.daily_cap),
-            "status": "recognized" if hard_block_music else ("unrecognized_music" if review_music else "pass"),
+            "status": status,
+            "error": last_error_msg if has_provider_error else None,
         }
