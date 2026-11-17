@@ -34,6 +34,7 @@ interface RightsStatusData {
 interface ReviewClip {
   post_id: string;
   video_id?: string;
+  target_date?: string;
   title: string;
   uploader?: string;
   slot_time?: string;
@@ -43,6 +44,7 @@ interface ReviewClip {
   reasons: string[];
   layers: Record<string, any>;
   thumb_url: string;
+  privacy?: string;
 }
 
 interface PublishedClip {
@@ -466,15 +468,15 @@ export const ClaimsView: React.FC = () => {
         </div>
       </div>
 
-      {/* SECTION 2: Needs Review (Tomorrow's Scheduled Clips) */}
+      {/* SECTION 2: Needs Review (Scheduled Clips) */}
       <div className="bg-white rounded-[16px] p-[20px] lg:p-[28px] border border-[#D5DBD5]/40 flex flex-col gap-[20px] shadow-sm">
         <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-[12px]">
           <div>
             <h2 className="font-heading font-semibold text-[20px] text-[#1D3B33]">
-              Needs Review (Tomorrow’s Scheduled Clips)
+              Needs Review (Scheduled Clips)
             </h2>
             <p className="font-ui text-[13px] text-[#6F7A73]">
-              Pre-upload review window. Verified clips remain scheduled; flagged clips can be held or replaced from reserve.
+              Pre-broadcast review window for scheduled clips not yet public. Verified clips remain scheduled; flagged clips can be held or replaced from reserve.
             </p>
           </div>
           <button
@@ -488,7 +490,7 @@ export const ClaimsView: React.FC = () => {
         <div className="flex flex-col divide-y divide-[#D5DBD5]">
           {reviewClips.length === 0 ? (
             <div className="py-[32px] text-center text-[#6F7A73] font-ui text-[14px]">
-              No scheduled clips pending review for tomorrow.
+              No scheduled clips pending review.
             </div>
           ) : (
             reviewClips.map((clip) => {
@@ -499,9 +501,14 @@ export const ClaimsView: React.FC = () => {
                 <div key={clip.post_id} className="py-[16px] flex flex-col gap-[12px]">
                   <div className="flex flex-col lg:flex-row items-start lg:items-center justify-between gap-[16px]">
                     <div className="flex items-center gap-[16px]">
-                      <span className="font-heading font-medium text-[15px] text-[#1D3B33] w-[86px] shrink-0">
-                        {formatTimeET(clip.slot_time)}
-                      </span>
+                      <div className="flex flex-col text-left shrink-0 min-w-[90px]">
+                        <span className="font-heading font-medium text-[15px] text-[#1D3B33]">
+                          {formatTimeET(clip.slot_time)}
+                        </span>
+                        <span className="font-ui text-[11px] text-[#6F7A73]">
+                          {clip.target_date ? formatDateET(clip.target_date, { month: 'short', day: 'numeric' }) : ''}
+                        </span>
+                      </div>
                       <Thumb src={clip.thumb_url} alt={stripHashtags(clip.title)} />
                       <div className="flex flex-col gap-[3px]">
                         <span className="font-ui font-semibold text-[15px] text-[#1D3B33]">

@@ -194,37 +194,63 @@ def get_rights_status():
 @router.get("/review")
 def get_needs_review_queue():
     """
-    Returns tomorrow's scheduled clips with risk badges and per-layer findings.
+    Returns every scheduled clip that is not public yet (going live today, tomorrow, or upcoming),
+    with risk badges, per-layer findings, and action capabilities (Mark Clear, Hold, Mark Claimed, Replace).
     """
     now_ny = datetime.now(ZoneInfo("America/New_York"))
-    target_date = (now_ny + timedelta(days=1)).strftime("%Y-%m-%d")
+    today_str = now_ny.strftime("%Y-%m-%d")
 
     with get_ro_connection() as conn:
-        # Check tomorrow first; if empty check today
         cur = conn.execute("""
-            SELECT s.slot_time, s.slot_hour, s.post_id, s.title, s.uploader, s.source_url, s.video_path,
-                   s.rights_status, s.rights_risk, u.video_id, u.publish_at
+            SELECT s.target_date, s.slot_time, s.slot_hour, s.post_id, s.title, s.uploader, s.source_url, s.video_path,
+                   COALESCE(u.rights_status, s.rights_status, 'unreviewed') as rights_status,
+                   COALESCE(u.rights_risk, s.rights_risk, 0) as rights_risk,
+                   u.video_id, u.publish_at, u.privacy, u.status as upload_status
             FROM schedule s
             LEFT JOIN uploads u ON s.post_id = u.post_id
-            WHERE s.target_date = ?
-            ORDER BY s.slot_time ASC
-        """, (target_date,))
+            WHERE (s.status IS NULL OR s.status != 'deleted')
+              AND (u.status IS NULL OR u.status != 'deleted')
+              AND (s.target_date >= ? OR u.rights_status = 'held' OR u.privacy = 'private')
+            ORDER BY s.target_date ASC, s.slot_time ASC
+        """, (today_str,))
         rows = [dict(r) for r in cur.fetchall()]
 
-        if not rows:
-            target_date = now_ny.strftime("%Y-%m-%d")
-            cur = conn.execute("""
-                SELECT s.slot_time, s.slot_hour, s.post_id, s.title, s.uploader, s.source_url, s.video_path,
-                       s.rights_status, s.rights_risk, u.video_id, u.publish_at
-                FROM schedule s
-                LEFT JOIN uploads u ON s.post_id = u.post_id
-                WHERE s.target_date = ?
-                ORDER BY s.slot_time ASC
-            """, (target_date,))
-            rows = [dict(r) for r in cur.fetchall()]
+    # Fetch live YouTube status (cached) to verify if already public or missing
+    video_ids = [r["video_id"] for r in rows if r.get("video_id")]
+    live_stats = {}
+    if video_ids:
+        try:
+            from dashboard.backend.youtube_api import fetch_live_video_stats
+            live_stats = fetch_live_video_stats(video_ids)
+        except Exception:
+            live_stats = {}
 
-        # Attach rights_checks details
-        for r in rows:
+    filtered_rows = []
+    for r in rows:
+        vid = r.get("video_id")
+        live = live_stats.get(vid, {}) if vid else {}
+
+        # If video is found on YouTube:
+        if vid and live.get("found"):
+            yt_privacy = live.get("status", {}).get("privacyStatus")
+            # If already public, it has gone live -> exclude from Needs Review
+            if yt_privacy == "public":
+                continue
+            r["privacy"] = yt_privacy or r.get("privacy") or "private"
+        elif vid and live.get("missing"):
+            # If deleted on YouTube -> exclude from Needs Review
+            continue
+        else:
+            # If no live status or not uploaded yet:
+            if r.get("privacy") == "public":
+                continue
+            r["privacy"] = r.get("privacy") or "private"
+
+        filtered_rows.append(r)
+
+    # Attach rights_checks details for each clip
+    with get_ro_connection() as conn:
+        for r in filtered_rows:
             pid = r["post_id"]
             check_row = conn.execute("""
                 SELECT layers_json, risk_score, decision, reasons_json
@@ -256,7 +282,8 @@ def get_needs_review_queue():
 
             r["thumb_url"] = f"/api/youtube/thumb/{pid}"
 
-    return {"target_date": target_date, "clips": rows}
+    target_date = filtered_rows[0]["target_date"] if filtered_rows else today_str
+    return {"target_date": target_date, "clips": filtered_rows}
 
 
 @router.get("/published")
@@ -293,8 +320,31 @@ def get_recently_published(days: int = 7):
         except Exception:
             live_stats = {}
 
+    now_utc_str = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    today_str = now_ny.strftime("%Y-%m-%d")
+
     changed_privacy = []
+    published_rows = []
     for r in rows:
+        vid = r.get("video_id")
+        live = live_stats.get(vid, {}) if vid else {}
+        is_missing = bool(vid and live.get("missing"))
+        yt_privacy = (live.get("status", {}).get("privacyStatus") if live.get("found") else None) or r.get("privacy") or "private"
+
+        # Exclude upcoming scheduled private clips that have NOT gone live yet
+        # (they belong in Needs Review, not in Recently Published!)
+        is_future_scheduled = (
+            not is_missing
+            and yt_privacy != "public"
+            and r.get("status") == "scheduled"
+            and (
+                r.get("target_date", "") > today_str
+                or (r.get("target_date") == today_str and (r.get("publish_at") or "") > now_utc_str)
+            )
+        )
+        if is_future_scheduled:
+            continue
+
         r["thumb_url"] = f"/api/youtube/thumb/{r['post_id']}"
         claim_info = claims_map.get(r["post_id"])
         if claim_info:
@@ -306,9 +356,6 @@ def get_recently_published(days: int = 7):
             r["claimant"] = None
             r["claim_type"] = None
 
-        vid = r.get("video_id")
-        live = live_stats.get(vid, {}) if vid else {}
-
         if vid and live.get("missing"):
             r["is_missing"] = True
             r["live_status"] = "missing"
@@ -318,7 +365,6 @@ def get_recently_published(days: int = 7):
             r["likes"] = 0
         elif vid and live.get("found"):
             r["is_missing"] = False
-            yt_privacy = live.get("status", {}).get("privacyStatus") or r.get("privacy") or "private"
             if yt_privacy != r.get("privacy"):
                 changed_privacy.append((yt_privacy, vid))
             r["privacy"] = yt_privacy
@@ -335,6 +381,8 @@ def get_recently_published(days: int = 7):
             r["views"] = 0
             r["likes"] = 0
 
+        published_rows.append(r)
+
     # Sync any updated live privacy back to DB
     if changed_privacy:
         try:
@@ -344,7 +392,7 @@ def get_recently_published(days: int = 7):
         except Exception:
             pass
 
-    return rows
+    return published_rows
 
 
 @router.post("/mark-clear", dependencies=[Depends(verify_rights_write_security)])

@@ -2,7 +2,7 @@ import os
 import json
 import sqlite3
 import pytest
-from datetime import datetime
+from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -1020,13 +1020,77 @@ def test_rights_status_api(client, test_db_setup):
     assert "stats" in data
 
 
-def test_rights_review_queue_api(client, test_db_setup):
+def test_rights_review_queue_api(client, test_db_setup, monkeypatch):
+    today_str = datetime.now(ZoneInfo("America/New_York")).strftime("%Y-%m-%d")
+    tomorrow_str = (datetime.now(ZoneInfo("America/New_York")) + timedelta(days=1)).strftime("%Y-%m-%d")
+
+    # Mock fetch_live_video_stats
+    def mock_fetch_live(video_ids):
+        res = {}
+        for vid in video_ids:
+            if vid == "yt_today_priv":
+                res[vid] = {
+                    "found": True,
+                    "missing": False,
+                    "status": {"privacyStatus": "private"},
+                    "statistics": {"viewCount": "0"},
+                }
+            elif vid == "yt_today_pub":
+                res[vid] = {
+                    "found": True,
+                    "missing": False,
+                    "status": {"privacyStatus": "public"},
+                    "statistics": {"viewCount": "10"},
+                }
+        return res
+
+    import dashboard.backend.routes_rights as routes_rights
+    monkeypatch.setattr(routes_rights, "fetch_live_video_stats", mock_fetch_live, raising=False)
+    import dashboard.backend.youtube_api as yt_api
+    monkeypatch.setattr(yt_api, "fetch_live_video_stats", mock_fetch_live, raising=False)
+
+    # Insert test clips for today (private scheduled) and tomorrow (scheduled)
+    now_iso = "2026-11-17T01:00:00"
+    conn = sqlite3.connect(str(test_db_setup))
+    conn.execute("""
+        INSERT OR REPLACE INTO schedule (target_date, slot_hour, slot_time, post_id, video_path, title, uploader, status, created_at)
+        VALUES (?, 12, ?, 'clip_today_sched', 'video1.mp4', 'Today Scheduled', 'user1', 'scheduled', ?)
+    """, (today_str, f"{today_str}T12:00:00-05:00", now_iso))
+    conn.execute("""
+        INSERT OR REPLACE INTO uploads (post_id, target_date, slot_time, status, video_id, uploaded_at, privacy, publish_at)
+        VALUES ('clip_today_sched', ?, ?, 'scheduled', 'yt_today_priv', ?, 'private', ?)
+    """, (today_str, f"{today_str}T12:00:00-05:00", now_iso, f"{today_str}T17:00:00Z"))
+
+    conn.execute("""
+        INSERT OR REPLACE INTO schedule (target_date, slot_hour, slot_time, post_id, video_path, title, uploader, status, created_at)
+        VALUES (?, 14, ?, 'clip_tmrw_sched', 'video2.mp4', 'Tomorrow Scheduled', 'user2', 'scheduled', ?)
+    """, (tomorrow_str, f"{tomorrow_str}T14:00:00-05:00", now_iso))
+
+    # Also insert an already-public clip for today (should be excluded from review queue)
+    conn.execute("""
+        INSERT OR REPLACE INTO schedule (target_date, slot_hour, slot_time, post_id, video_path, title, uploader, status, created_at)
+        VALUES (?, 9, ?, 'clip_today_pub', 'video3.mp4', 'Today Public', 'user3', 'scheduled', ?)
+    """, (today_str, f"{today_str}T09:00:00-05:00", now_iso))
+    conn.execute("""
+        INSERT OR REPLACE INTO uploads (post_id, target_date, slot_time, status, video_id, uploaded_at, privacy)
+        VALUES ('clip_today_pub', ?, ?, 'uploaded', 'yt_today_pub', ?, 'public')
+    """, (today_str, f"{today_str}T09:00:00-05:00", now_iso))
+    conn.commit()
+    conn.close()
+
     resp = client.get("/api/rights/review")
     assert resp.status_code == 200
     data = resp.json()
     assert "target_date" in data
     assert "clips" in data
     assert isinstance(data["clips"], list)
+
+    pids = [c["post_id"] for c in data["clips"]]
+    # Both today's private scheduled clip and tomorrow's clip must be in Needs Review
+    assert "clip_today_sched" in pids
+    assert "clip_tmrw_sched" in pids
+    # Public clip must NOT be in Needs Review
+    assert "clip_today_pub" not in pids
 
 
 def test_rights_mark_clear_and_held_api(client, test_db_setup):
