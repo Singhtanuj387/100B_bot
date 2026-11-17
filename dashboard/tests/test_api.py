@@ -245,8 +245,12 @@ def test_schedule_put_ruamel_roundtrip_comment_preservation(client, tmp_path, mo
         "target_count: 6  # inline comment on target_count\n"
         "# Another comment\n"
         "peak_hours:\n"
-        "  - '12:00'\n"
-        "  - '14:00'\n"
+        "  - 12\n"
+        "  - 14\n"
+        "\n"
+        "# Allowed sources and exploration targets (Reddit is primary; Twitter is experimental)\n"
+        "allowed_sources:\n"
+        "  twitter_enabled: false                # Explicitly disabled; Reddit is primary\n"
     )
     agent_cfg.write_text(initial_agent_yaml, encoding="utf-8")
     uploader_cfg.write_text("upload:\n  max_uploads_per_day: 6\n", encoding="utf-8")
@@ -270,12 +274,23 @@ def test_schedule_put_ruamel_roundtrip_comment_preservation(client, tmp_path, mo
     # Verify backup exists
     assert agent_cfg.with_suffix(".yaml.bak").exists()
 
-    # Verify comments were preserved
-    updated_text = agent_cfg.read_text(encoding="utf-8")
-    assert "# Peak publishing hours header comment" in updated_text
-    assert "# Another comment" in updated_text
-    assert "14:15" in updated_text
-    assert "17:30" in updated_text
+    # Verify whole file comparison:
+    updated_text = agent_cfg.read_text(encoding="utf-8").replace("\r\n", "\n")
+    expected_text = (
+        "# Peak publishing hours header comment\n"
+        "timezone: 'America/New_York'\n"
+        "target_count: 3  # inline comment on target_count\n"
+        "# Another comment\n"
+        "peak_hours:\n"
+        "  - 12:00\n"
+        "  - 14:15\n"
+        "  - 17:30\n"
+        "\n"
+        "# Allowed sources and exploration targets (Reddit is primary; Twitter is experimental)\n"
+        "allowed_sources:\n"
+        "  twitter_enabled: false                # Explicitly disabled; Reddit is primary\n"
+    )
+    assert updated_text == expected_text
 
 
 def test_youtube_status_rules(client, test_db_setup, monkeypatch):
@@ -903,21 +918,30 @@ def test_put_schedule_preserves_all_comments_and_blank_lines(client, test_db_set
     )
     assert expected_block in normalized_saved
 
-    # Whole-file comparison: only the peak_hours list elements differ
-    orig_lines = [l.strip() for l in original_content.replace("\r\n", "\n").splitlines()]
-    saved_lines = [l.strip() for l in normalized_saved.splitlines()]
+    # Strict whole-file comparison: character for character, only peak_hours entries changed
+    norm_orig = original_content.replace("\r\n", "\n")
+    expected_full_file = norm_orig.replace(
+        """peak_hours:
+  - 12
+  - 14
+  - 17
+  - 19
+  - 20
+  - 21""",
+        """peak_hours:
+  - 14:00
+  - 17:00
+  - 19:00
+  - 20:00
+  - 21:00
+  - 22:00""",
+    )
+    assert normalized_saved == expected_full_file
 
-    orig_peak_idx = orig_lines.index("peak_hours:")
-    orig_allowed_idx = orig_lines.index("allowed_sources:")
 
-    saved_peak_idx = saved_lines.index("peak_hours:")
-    saved_allowed_idx = saved_lines.index("allowed_sources:")
-
-    # Everything before peak_hours must be identical
-    assert orig_lines[:orig_peak_idx] == saved_lines[:saved_peak_idx]
-
-    # Everything after allowed_sources must be identical
-    assert orig_lines[orig_allowed_idx:] == saved_lines[saved_allowed_idx:]
-
-    # The comment line between them must match
-    assert expected_comment in saved_lines[saved_peak_idx:saved_allowed_idx]
+def test_compare_whole_file_after_saving_schedule(client, test_db_setup, tmp_path, monkeypatch):
+    """
+    Explicit test comparing the whole agent/config.yaml file line by line
+    and character by character after saving schedule.
+    """
+    test_put_schedule_preserves_all_comments_and_blank_lines(client, test_db_setup, tmp_path, monkeypatch)
