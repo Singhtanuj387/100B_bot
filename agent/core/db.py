@@ -1,7 +1,8 @@
 import sqlite3
 import json
 from pathlib import Path
-from datetime import datetime
+from datetime import datetime, timezone
+from zoneinfo import ZoneInfo
 from contextlib import contextmanager
 from typing import Optional, Dict, Any, List
 from loguru import logger
@@ -1200,6 +1201,54 @@ class AgentDatabase:
                 cur = conn.execute("SELECT provider, calls, errors FROM provider_usage WHERE day = ?", (use_day,))
                 return {r["provider"]: {"calls": r["calls"], "errors": r["errors"]} for r in cur.fetchall()}
 
+    def count_real_published(self, subreddit: Optional[str] = None) -> int:
+        """
+        Count real published clips on YouTube.
+        A clip is considered real published if:
+        1. It has a video_id and status != 'deleted'
+        2. And either status in ('uploaded', 'published') or scheduled publish time has arrived (publish_at <= now or target_date <= today_ny).
+        If subreddit is provided, filters to clips originating from that subreddit.
+        """
+        now_utc_str = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        today_ny = datetime.now(ZoneInfo("America/New_York")).strftime("%Y-%m-%d")
+
+        with self._get_connection() as conn:
+            if subreddit:
+                clean_sub = subreddit.strip().replace("r/", "").replace("/r/", "").strip().lower()
+                query = """
+                    SELECT COUNT(*) FROM uploads u
+                    LEFT JOIN schedule s ON u.post_id = s.post_id
+                    WHERE u.video_id IS NOT NULL
+                      AND u.status != 'deleted'
+                      AND (
+                        u.status IN ('uploaded', 'published')
+                        OR (u.publish_at IS NOT NULL AND u.publish_at <= ?)
+                        OR (u.publish_at IS NULL AND u.target_date <= ?)
+                      )
+                      AND (
+                        LOWER(s.source_url) LIKE ?
+                        OR LOWER(s.source_url) LIKE ?
+                      )
+                """
+                return conn.execute(query, (
+                    now_utc_str,
+                    today_ny,
+                    f"%reddit.com/r/{clean_sub}/%",
+                    f"%/r/{clean_sub}/%",
+                )).fetchone()[0]
+            else:
+                query = """
+                    SELECT COUNT(*) FROM uploads u
+                    WHERE u.video_id IS NOT NULL
+                      AND u.status != 'deleted'
+                      AND (
+                        u.status IN ('uploaded', 'published')
+                        OR (u.publish_at IS NOT NULL AND u.publish_at <= ?)
+                        OR (u.publish_at IS NULL AND u.target_date <= ?)
+                      )
+                """
+                return conn.execute(query, (now_utc_str, today_ny)).fetchone()[0]
+
     def get_claim_rates_by_subreddit(self) -> Dict[str, Any]:
         """Compute claims per 100 published clips by subreddit."""
         with self._get_connection() as conn:
@@ -1212,13 +1261,13 @@ class AgentDatabase:
             claims_by_source = {r["source_name"]: r["claim_count"] for r in cur_claims}
 
             total_claims = conn.execute("SELECT COUNT(*) FROM claims").fetchone()[0]
-            total_uploads = conn.execute("SELECT COUNT(*) FROM uploads WHERE status = 'uploaded'").fetchone()[0]
-            overall_rate = round((total_claims / total_uploads) * 100, 2) if total_uploads > 0 else 0.0
+            total_published = self.count_real_published()
+            overall_rate = round((total_claims / total_published) * 100, 2) if total_published > 0 else 0.0
 
             return {
                 "overall_claims_per_100": overall_rate,
                 "total_claims": total_claims,
-                "total_published": total_uploads,
+                "total_published": total_published,
                 "by_source": claims_by_source,
             }
 

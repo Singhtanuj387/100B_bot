@@ -3,7 +3,7 @@ import json
 import sqlite3
 import yaml
 from pathlib import Path
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 from typing import Dict, Any, Optional, List
 from fastapi import APIRouter, HTTPException, Header, Body
@@ -101,9 +101,20 @@ def get_rights_status():
         cur = conn.execute("SELECT provider, calls, errors FROM provider_usage WHERE day = ?", (today_str,))
         usage_rows = {r["provider"]: dict(r) for r in cur.fetchall()}
 
-        # Total claims
+        # Total claims and real published clips
         total_claims = conn.execute("SELECT COUNT(*) FROM claims").fetchone()[0]
-        total_published = conn.execute("SELECT COUNT(*) FROM uploads WHERE status = 'uploaded'").fetchone()[0]
+        now_utc_str = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        q_pub = """
+            SELECT COUNT(*) FROM uploads u
+            WHERE u.video_id IS NOT NULL
+              AND u.status != 'deleted'
+              AND (
+                u.status IN ('uploaded', 'published')
+                OR (u.publish_at IS NOT NULL AND u.publish_at <= ?)
+                OR (u.publish_at IS NULL AND u.target_date <= ?)
+              )
+        """
+        total_published = conn.execute(q_pub, (now_utc_str, today_str)).fetchone()[0]
         claim_rate = round((total_claims / total_published) * 100, 2) if total_published > 0 else 0.0
 
         # Subreddit claim breakdown
@@ -206,11 +217,15 @@ def get_needs_review_queue():
                     r["reasons"] = []
                 r["risk_score"] = check_row["risk_score"]
                 r["decision"] = check_row["decision"]
+                if r["rights_status"] == "unreviewed":
+                    r["rights_status"] = "cleared" if check_row["decision"] == "pass" else "needs_check"
             else:
                 r["layers"] = {}
                 r["reasons"] = []
                 r["risk_score"] = r.get("rights_risk") or 0
                 r["decision"] = "pass" if r["risk_score"] < 30 else ("review" if r["risk_score"] < 80 else "block")
+                if r["rights_status"] == "unreviewed":
+                    r["rights_status"] = "cleared" if r["decision"] == "pass" else "needs_check"
 
             r["thumb_url"] = f"/api/youtube/thumb/{pid}"
 

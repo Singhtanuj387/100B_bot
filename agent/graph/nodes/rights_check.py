@@ -38,7 +38,7 @@ def rights_check_node(
         raw_video_path = clip.get("raw_video_path") or video_path
         title = clip.get("title", "")
         uploader = clip.get("uploader", "")
-        subreddit = clip.get("subreddit") or clip.get("source_name") or ""
+        subreddit = clip.get("subreddit") or (clip.get("extra") or {}).get("subreddit") or clip.get("source_name") or ""
         source_url = clip.get("source_url") or clip.get("post_url") or ""
         duration = clip.get("duration")
 
@@ -94,7 +94,7 @@ def rights_check_node(
         raw_video_path = clip.get("raw_video_path") or video_path
         title = clip.get("title", "")
         uploader = clip.get("uploader", "")
-        subreddit = clip.get("subreddit") or clip.get("source_name") or ""
+        subreddit = clip.get("subreddit") or (clip.get("extra") or {}).get("subreddit") or clip.get("source_name") or ""
         source_url = clip.get("source_url") or clip.get("post_url") or ""
         duration = clip.get("duration")
 

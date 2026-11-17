@@ -424,7 +424,7 @@ def test_pull_and_replace_transactional_safety(test_db):
 
 
 # ==============================================================================
-# 7. SEEDED CLAIMS VERIFICATION
+# 7. SEEDED CLAIMS & SUBREDDIT PENALTY TESTS
 # ==============================================================================
 
 def test_seeded_claims_exist(test_db):
@@ -434,3 +434,107 @@ def test_seeded_claims_exist(test_db):
 
     assert "reddit_1xv7kmf" in post_ids  # CollabDRM visual claim
     assert "reddit_1xrfauk" in post_ids  # SME audio claim ("Eye of the Tiger")
+
+
+def test_unknown_subreddit_skips_penalty(test_db):
+    """Unknown or empty subreddit must NOT receive fake high_claim_subreddit penalty."""
+    engine = RightsCheckEngine(db=test_db)
+
+    # Empty subreddit string
+    res = engine.evaluate_clip(
+        post_id="test_unknown_sub",
+        video_path="",
+        title="Just a clean video",
+        subreddit="",
+        source_url="",
+    )
+    assert "high_claim_subreddit" not in res["reasons"]
+    assert res["risk_score"] == 0
+
+    # None / unknown string
+    res2 = engine.evaluate_clip(
+        post_id="test_none_sub",
+        video_path="",
+        title="Just another video",
+        subreddit="unknown",
+        source_url=None,
+    )
+    assert "high_claim_subreddit" not in res2["reasons"]
+    assert res2["risk_score"] == 0
+
+
+def test_low_volume_subreddit_skips_penalty(test_db):
+    """Subreddit with fewer than 20 real published clips must NOT receive claim penalty."""
+    engine = RightsCheckEngine(db=test_db)
+
+    # In test_db, r/funny has 2 claims seeded, but 0 real published clips (< 20 threshold)
+    res = engine.evaluate_clip(
+        post_id="test_funny_low_vol",
+        video_path="",
+        title="Funny clean clip",
+        subreddit="r/funny",
+        source_url="https://www.reddit.com/r/funny/comments/123/clip/",
+    )
+    assert "high_claim_subreddit" not in res["reasons"]
+    assert res["risk_score"] == 0
+
+
+def test_high_volume_high_claim_subreddit_applies_penalty(test_db):
+    """Subreddit with >= 20 real published clips and > 10% claim rate receives penalty (+20)."""
+    now_iso = datetime.now().isoformat()
+    past_pub_at = (datetime.now(timezone.utc) - timedelta(days=1)).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+    with test_db._get_connection() as conn:
+        # Seed 25 published clips for r/risky (distinct dates/times)
+        for i in range(25):
+            pid = f"risky_pub_{i}"
+            t_date = f"2026-10-{i+1:02d}"
+            s_time = f"{t_date}T12:00:00-05:00"
+            conn.execute("""
+                INSERT INTO schedule (post_id, target_date, slot_hour, slot_time, video_path, created_at, source_url)
+                VALUES (?, ?, 12, ?, 'dummy.mp4', ?, ?)
+            """, (pid, t_date, s_time, now_iso, f"https://www.reddit.com/r/risky/comments/{pid}/"))
+            conn.execute("""
+                INSERT INTO uploads (post_id, target_date, video_id, status, publish_at)
+                VALUES (?, ?, ?, 'scheduled', ?)
+            """, (pid, t_date, f"yt_{pid}", past_pub_at))
+
+        # Seed 5 claims for r/risky (5 / 25 = 20% > 10%)
+        for i in range(5):
+            conn.execute("""
+                INSERT INTO claims (video_id, post_id, claim_type, claimant, asset_title, action, noted_at, source_name)
+                VALUES (?, ?, 'audio', 'RecordCo', 'Track', 'kept', ?, 'r/risky')
+            """, (f"yt_risky_pub_{i}", f"risky_pub_{i}", now_iso))
+
+    engine = RightsCheckEngine(db=test_db)
+    res = engine.evaluate_clip(
+        post_id="test_risky_high_vol",
+        video_path="",
+        title="Risky clip",
+        subreddit="r/risky",
+        source_url="https://www.reddit.com/r/risky/comments/999/clip/",
+    )
+    assert "high_claim_subreddit" in res["reasons"]
+    assert res["risk_score"] == 20
+
+
+def test_count_real_published_logic(test_db):
+    """Verify count_real_published accurately filters by publish time, status, and subreddit."""
+    now_iso = datetime.now().isoformat()
+    past_pub_at = (datetime.now(timezone.utc) - timedelta(hours=2)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    future_pub_at = (datetime.now(timezone.utc) + timedelta(days=1)).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+    with test_db._get_connection() as conn:
+        # 1. Immediate uploaded
+        conn.execute("INSERT INTO uploads (post_id, target_date, video_id, status) VALUES ('p_imm', '2026-11-10', 'yt_imm', 'uploaded')")
+        # 2. Past scheduled publishAt
+        conn.execute("INSERT INTO uploads (post_id, target_date, video_id, status, publish_at) VALUES ('p_past', '2026-11-10', 'yt_past', 'scheduled', ?)", (past_pub_at,))
+        # 3. Future scheduled publishAt (must NOT be counted)
+        conn.execute("INSERT INTO uploads (post_id, target_date, video_id, status, publish_at) VALUES ('p_fut', '2026-11-20', 'yt_fut', 'scheduled', ?)", (future_pub_at,))
+        # 4. Deleted upload (must NOT be counted)
+        conn.execute("INSERT INTO uploads (post_id, target_date, video_id, status, publish_at) VALUES ('p_del', '2026-11-10', 'yt_del', 'deleted', ?)", (past_pub_at,))
+        # 5. Missing video_id (must NOT be counted)
+        conn.execute("INSERT INTO uploads (post_id, target_date, video_id, status) VALUES ('p_novid', '2026-11-10', NULL, 'uploaded')")
+
+    # Overall real published clips: 2 (p_imm and p_past)
+    assert test_db.count_real_published() == 2

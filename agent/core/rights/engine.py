@@ -1,5 +1,7 @@
 import os
-from datetime import datetime
+import re
+from datetime import datetime, timezone
+from zoneinfo import ZoneInfo
 from pathlib import Path
 from typing import Dict, Any, List, Optional
 from loguru import logger
@@ -87,6 +89,23 @@ class RightsCheckEngine:
         risk_score = 0
         has_hard_block = False
 
+        # 1. Normalize and resolve subreddit
+        clean_sub = None
+        if subreddit:
+            s_candidate = subreddit.strip().replace("r/", "").replace("/r/", "").strip()
+            if s_candidate and s_candidate.lower() not in ("unknown", "none", ""):
+                clean_sub = s_candidate
+
+        # If not provided directly, attempt to extract from source_url
+        if not clean_sub and source_url:
+            m = re.search(r"reddit\.com/r/([^/?#]+)", source_url, re.IGNORECASE)
+            if not m:
+                m = re.search(r"/r/([^/?#]+)", source_url, re.IGNORECASE)
+            if m:
+                s_extracted = m.group(1).strip()
+                if s_extracted and s_extracted.lower() not in ("unknown", "none", ""):
+                    clean_sub = s_extracted
+
         # Retrieve active learned blocklist and past claims from DB if available
         active_blocklist: List[Dict[str, Any]] = []
         claimed_clips_rows: List[Dict[str, Any]] = []
@@ -107,16 +126,45 @@ class RightsCheckEngine:
                     if fetched_claims and hasattr(fetched_claims[0], "keys"):
                         claimed_clips_rows = [dict(r) for r in fetched_claims]
 
-                    # Subreddit claim stats
-                    clean_sub = subreddit.replace("r/", "")
-                    res_claims = conn.execute("SELECT COUNT(*) FROM claims WHERE source_name LIKE ?", (f"%{clean_sub}%",)).fetchone()
-                    res_pub = conn.execute("SELECT COUNT(*) FROM uploads WHERE status = 'uploaded'").fetchone()
-                    if (
-                        res_claims and res_pub
-                        and isinstance(res_pub[0], (int, float)) and res_pub[0] > 0
-                        and isinstance(res_claims[0], (int, float))
-                    ):
-                        subreddit_claim_rate = res_claims[0] / res_pub[0]
+                    # Subreddit claim stats:
+                    # Skip penalty when subreddit is unknown, and require at least 20 real published clips from that subreddit first
+                    if clean_sub:
+                        sub_published = 0
+                        if hasattr(self.db, "count_real_published"):
+                            sub_published = self.db.count_real_published(subreddit=clean_sub)
+                        else:
+                            now_utc_str = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+                            today_ny = datetime.now(ZoneInfo("America/New_York")).strftime("%Y-%m-%d")
+                            q_sub_pub = """
+                                SELECT COUNT(*) FROM uploads u
+                                LEFT JOIN schedule s ON u.post_id = s.post_id
+                                WHERE u.video_id IS NOT NULL AND u.status != 'deleted'
+                                  AND (
+                                    u.status IN ('uploaded', 'published')
+                                    OR (u.publish_at IS NOT NULL AND u.publish_at <= ?)
+                                    OR (u.publish_at IS NULL AND u.target_date <= ?)
+                                  )
+                                  AND (
+                                    LOWER(s.source_url) LIKE ?
+                                    OR LOWER(s.source_url) LIKE ?
+                                  )
+                            """
+                            row_pub = conn.execute(q_sub_pub, (
+                                now_utc_str,
+                                today_ny,
+                                f"%reddit.com/r/{clean_sub.lower()}/%",
+                                f"%/r/{clean_sub.lower()}/%",
+                            )).fetchone()
+                            sub_published = row_pub[0] if row_pub and isinstance(row_pub[0], (int, float)) else 0
+
+                        # Require at least 20 real published clips from that subreddit first
+                        if isinstance(sub_published, (int, float)) and sub_published >= 20:
+                            res_claims = conn.execute(
+                                "SELECT COUNT(*) FROM claims WHERE LOWER(source_name) LIKE ?",
+                                (f"%{clean_sub.lower()}%",)
+                            ).fetchone()
+                            if res_claims and isinstance(res_claims[0], (int, float)):
+                                subreddit_claim_rate = res_claims[0] / sub_published
             except Exception as e:
                 logger.debug(f"DB access error in rights check: {e}")
 
@@ -273,7 +321,7 @@ class RightsCheckEngine:
             reasons.append("duration_over_60s")
             risk_score += self.weights.get("duration_over_60s", 15)
 
-        if subreddit_claim_rate > 0.10:
+        if clean_sub and subreddit_claim_rate > 0.10:
             reasons.append("high_claim_subreddit")
             risk_score += self.weights.get("high_claim_subreddit", 20)
 

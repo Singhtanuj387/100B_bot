@@ -100,7 +100,7 @@ def run_backtest(engine: RightsCheckEngine, db: AgentDatabase) -> None:
     # 1. Query uploads
     with db._get_connection() as conn:
         cur = conn.execute("""
-            SELECT u.post_id, u.video_id, u.target_date, s.title, s.uploader, s.video_path
+            SELECT u.post_id, u.video_id, u.target_date, s.title, s.uploader, s.video_path, s.source_url
             FROM uploads u
             LEFT JOIN schedule s ON u.post_id = s.post_id
         """)
@@ -134,6 +134,7 @@ def run_backtest(engine: RightsCheckEngine, db: AgentDatabase) -> None:
                 video_path="",
                 title=title,
                 uploader=row.get("uploader", ""),
+                source_url=row.get("source_url") or "",
                 target_date=row.get("target_date"),
             )
         else:
@@ -142,6 +143,7 @@ def run_backtest(engine: RightsCheckEngine, db: AgentDatabase) -> None:
                 video_path=actual_path,
                 title=title,
                 uploader=row.get("uploader", ""),
+                source_url=row.get("source_url") or "",
                 target_date=row.get("target_date"),
             )
 
